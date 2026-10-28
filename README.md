@@ -138,6 +138,8 @@ O PRD especifica que a demonstração aceita qualquer senha. Essa autenticação
 
 O `.env.example` seleciona `openai/gpt-6.1-sol` e o modo Mastra. Configure sua própria `OPENAI_API_KEY` no `.env` e reinicie a aplicação para habilitar chamadas reais. Sem chave, a aplicação mostra “Assistente local online”; se o provedor falhar durante uma chamada, o sistema informa que a operação não pôde ser concluída em vez de fingir que usou o LLM. O backend continua responsável pelas decisões de acesso e execução.
 
+Para a avaliação do requisito de agente/LLM do PRD, execute com a chave OpenAI configurada. O modo local permite explorar a demonstração sem credenciais, mas não substitui essa integração.
+
 ## Banco de dados
 
 ```bash

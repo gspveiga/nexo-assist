@@ -6,6 +6,8 @@ Fonte de requisitos: `Desafio_Tecnico_Nexo_Assist_PRD_v5.pdf` (5 páginas). Os s
 
 | Verificação | Status | Evidência |
 | --- | --- | --- |
+| Usar Mastra (preferência) ou LangGraph.js como framework do agente. | Atendido | `src/server/agent/mastra-router.ts` implementa o roteador estruturado com Mastra. |
+| Escolher um provedor/modelo LLM e justificar a escolha no README. | Atendido com configuração | OpenAI GPT-6.1 Sol selecionado e documentado; chamada real requer `OPENAI_API_KEY` e `NEXO_AGENT_MODE=mastra`. O modo local sem chave é apenas fallback de demonstração e não conta como uso do LLM. |
 | Funcionário entra com conta de demonstração; perfil determina a área da aplicação. | Atendido | `src/app/api/auth/login/route.ts`, `src/server/auth/session.ts`, páginas `/chat` e `/console`. |
 | Conversa salva e respeita o limite de 30 mensagens da sessão. | Atendido | `conversations.session_message_count`; `processUserMessage`; teste “session token…” e validação de workflow. |
 | FAQ responde com artigo cadastrado e lida com artigo não aplicável. | Atendido | `knowledge_articles`, `searchKnowledge`, `handleFaq`; teste FAQ. Inclui VPN 809 Windows 10/11. |
@@ -31,7 +33,6 @@ Fonte de requisitos: `Desafio_Tecnico_Nexo_Assist_PRD_v5.pdf` (5 páginas). Os s
 | Critério/diferencial | Status | Evidência |
 | --- | --- | --- |
 | Máscara clara entre roteamento do agente e regras de negócio. | Atendido | Classificador local ou Mastra seleciona intenção; serviços do backend validam e executam. |
-| Mastra ou LangGraph.js para agente. | Atendido | Mastra é opcional para classificação estruturada; modo local funciona sem chave. |
 | Aplicação publicada em ambiente externo. | Não incluído | O PRD marca deployment como diferencial; o projeto está preparado para GitHub, sem hospedagem configurada. |
 | Qualidade visual e estados de carregamento, erro, ausência de dados e pausa. | Atendido no código | Telas e CSS incluem os estados; não foi feita captura visual com browser neste ambiente. |
 | Casos principais e erros com teste automatizado. | Atendido | `tests/workflows.test.ts` e `tests/http-smoke.mjs`. |
@@ -43,5 +44,5 @@ Fonte de requisitos: `Desafio_Tecnico_Nexo_Assist_PRD_v5.pdf` (5 páginas). Os s
 - **“Não sei” na abrangência:** o protótipo oferece essa escolha e o banco a registra. Como não há abrangência conhecida, a classificação aplica prioridade conservadora até haver mais evidência.
 - **Prazo vencido:** o funcionário vê a explicação e uma ação para chamar analista. A transferência exige a escolha da pessoa, seguindo a pergunta e as opções do protótipo; a conversa não é transferida silenciosamente.
 - **Feriados:** o PRD define dias/horas úteis, mas não lista feriados. O cálculo desconta fins de semana e horário fora de 8h–18h, sem calendário de feriados.
-- **Classificador local:** regras e similaridade lexical cobrem a demonstração. A integração LLM é opcional, apenas classifica intenção e cai para roteamento local quando indisponível ou incerta; ela não executa nem autoriza operações.
+- **LLM:** Mastra com OpenAI GPT-6.1 Sol classifica intenções; o backend executa as operações e aplica autorização. A chave fica fora do Git. O modo local está disponível para demonstração sem credenciais, mas não substitui o requisito de usar um LLM na avaliação.
 - **Redefinição de senha e privacidade:** não existe serviço de e-mail no escopo local. A tela informa a limitação e oferece o canal/ramal de demonstração.
