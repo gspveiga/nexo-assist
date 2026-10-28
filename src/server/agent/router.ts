@@ -77,8 +77,8 @@ export async function routeMessage(
     if (decision.confidence < 0.55) return localRoute(text, db);
     return { ...decision, mode: "mastra" };
   } catch (error) {
-    console.error("Mastra não respondeu; usando roteamento local:", error instanceof Error ? error.message : error);
-    return localRoute(text, db);
+    console.error("Mastra não respondeu:", error instanceof Error ? error.message : error);
+    throw new Error("O modelo de IA não respondeu. Tente novamente quando o provedor estiver disponível.");
   }
 }
 
