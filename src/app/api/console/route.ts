@@ -6,7 +6,7 @@ import { getConsoleQueue } from "@/server/services/console.ts";
 export async function GET(): Promise<Response> {
   try {
     const analyst = await requireUser("analyst");
-    return Response.json({ queue: getConsoleQueue(getDatabase(), analyst) });
+    return Response.json({ queue: await getConsoleQueue(await getDatabase(), analyst) });
   } catch (error) {
     return errorResponse(error);
   }

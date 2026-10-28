@@ -1,5 +1,5 @@
 import type { ConversationState, Ticket, TicketDraft } from "@/shared/types";
-import { getAgentMode } from "./config.ts";
+import { getAgentMode, isLocalOllamaEndpoint } from "./config.ts";
 import { searchKnowledge } from "../services/knowledge.ts";
 import type { SqlDatabase } from "../db/database.ts";
 
@@ -40,7 +40,7 @@ export function isOutOfScope(text: string): boolean {
   return /\b(ferias|holerite|folha de pagamento|reembolso|nota fiscal|ar condicionado|limpeza|beneficio|plano de saude|rh|facilities)\b/.test(value);
 }
 
-export function localRoute(text: string, db: SqlDatabase): IntentDecision {
+export async function localRoute(text: string, db: SqlDatabase): Promise<IntentDecision> {
   const value = normalize(text);
   const ticketNumber = extractTicketNumber(text);
   if (/(analista|atendente|pessoa|humano|falar com alguem|quero falar)/.test(value)) {
@@ -56,7 +56,7 @@ export function localRoute(text: string, db: SqlDatabase): IntentDecision {
     return { intent: "lookup", query: text, ticketNumber, reason: "A mensagem pede consulta de chamado.", confidence: 0.9, mode: "local" };
   }
 
-  const matches = searchKnowledge(db, text);
+  const matches = await searchKnowledge(db, text);
   const asksForHelp = /\b(como|qual|onde|horario|horarios|senha|erro|configur|instal|reset|acessar)\b/.test(value);
   const reportsIssue = /(nao funciona|nao conecta|parou|aparece o erro|recebo o erro|travando|bloquead|lento|indisponivel|sem acesso|nao sincroniza)/.test(value);
   if (matches.length > 0 && asksForHelp && !reportsIssue) {
@@ -78,8 +78,8 @@ export async function routeMessage(
   db: SqlDatabase,
   context: { state: ConversationState; draft: TicketDraft | null; recentMessages: string[] },
 ): Promise<IntentDecision> {
-  if (context.state !== "agent" || context.draft) return localRoute(text, db);
-  const localDecision = localRoute(text, db);
+  if (context.state !== "agent" || context.draft) return await localRoute(text, db);
+  const localDecision = await localRoute(text, db);
   if (getAgentMode() !== "mastra" || localDecision.confidence >= 0.8) return localDecision;
   try {
     const { routeWithMastra } = await import("./mastra-router.ts");
@@ -88,10 +88,19 @@ export async function routeMessage(
     return { ...decision, mode: "mastra" };
   } catch (error) {
     console.error("Mastra não respondeu:", error instanceof Error ? error.name : "erro desconhecido");
+    const localEndpoint = isLocalOllamaEndpoint();
     if (error instanceof Error && error.name === "TimeoutError") {
-      throw new AgentProviderError("O Ollama local demorou mais de 30 segundos para responder. Tente novamente.");
+      throw new AgentProviderError(
+        localEndpoint
+          ? "O Ollama local demorou mais de 30 segundos para responder. Tente novamente."
+          : "O serviço Ollama configurado demorou mais de 30 segundos para responder. Tente novamente.",
+      );
     }
-    throw new AgentProviderError("Não foi possível consultar o Ollama local. Confirme se o Ollama está aberto e se o modelo configurado foi baixado.");
+    throw new AgentProviderError(
+      localEndpoint
+        ? "Não foi possível consultar o Ollama local. Confirme se o Ollama está aberto e se o modelo configurado foi baixado."
+        : "Não foi possível consultar o endpoint Ollama configurado. Verifique OLLAMA_BASE_URL, OLLAMA_API_KEY e o modelo selecionado.",
+    );
   }
 }
 

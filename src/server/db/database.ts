@@ -1,6 +1,7 @@
-import { DatabaseSync } from "node:sqlite";
+import { createClient, type InValue } from "@libsql/client";
 import { mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import type {
   ChatMessage,
@@ -10,49 +11,119 @@ import type {
   User,
 } from "@/shared/types";
 
-type SqlValue = string | number | bigint | Uint8Array | null;
-interface SqlStatement {
-  run(...values: SqlValue[]): { changes: number | bigint; lastInsertRowid: number | bigint };
-  get(...values: SqlValue[]): unknown;
-  all(...values: SqlValue[]): unknown[];
+export type SqlValue = InValue;
+export interface SqlStatement {
+  run(...values: SqlValue[]): Promise<{ changes: number | bigint; lastInsertRowid: number | bigint }>;
+  get(...values: SqlValue[]): Promise<unknown>;
+  all(...values: SqlValue[]): Promise<unknown[]>;
 }
 export interface SqlDatabase {
-  exec(sql: string): void;
+  exec(sql: string): Promise<void>;
   prepare(sql: string): SqlStatement;
-  close(): void;
+  close(): void | Promise<void>;
 }
+
 const migrationVersion = "001_initial";
+
+class LibSqlDatabase implements SqlDatabase {
+  private readonly client: ReturnType<typeof createClient>;
+
+  constructor(client: ReturnType<typeof createClient>) {
+    this.client = client;
+  }
+
+  async exec(sql: string): Promise<void> {
+    // libSQL's HTTP protocol executes one statement per call. Our migrations
+    // are plain SQLite DDL without semicolons embedded in string literals.
+    for (const statement of sql.split(";").map((item) => item.trim()).filter(Boolean)) {
+      await this.client.execute(statement);
+    }
+  }
+
+  prepare(sql: string): SqlStatement {
+    return {
+      run: async (...values) => {
+        const result = await this.client.execute({ sql, args: values });
+        return { changes: result.rowsAffected, lastInsertRowid: result.lastInsertRowid ?? 0 };
+      },
+      get: async (...values) => {
+        const result = await this.client.execute({ sql, args: values });
+        return result.rows[0] as Record<string, unknown> | undefined;
+      },
+      all: async (...values) => {
+        const result = await this.client.execute({ sql, args: values });
+        return result.rows as unknown as unknown[];
+      },
+    };
+  }
+
+  close(): void {
+    this.client.close();
+  }
+}
 
 export function resolveDatabaseFilePath(location = process.env.DB_PATH ?? "./data/nexo-assist.sqlite"): string {
   return location === ":memory:" ? location : isAbsolute(location) ? location : join(process.cwd(), "data", basename(location));
 }
 
-export function createDatabase(location = process.env.DB_PATH ?? "./data/nexo-assist.sqlite"): SqlDatabase {
-  const absolutePath = resolveDatabaseFilePath(location);
-  if (absolutePath !== ":memory:") mkdirSync(dirname(absolutePath), { recursive: true });
+export async function createDatabase(location = process.env.DB_PATH ?? "./data/nexo-assist.sqlite"): Promise<SqlDatabase> {
+  const remoteUrl = process.env.TURSO_DATABASE_URL?.trim();
+  const authToken = process.env.TURSO_AUTH_TOKEN?.trim();
+  let client: ReturnType<typeof createClient>;
 
-  const db = new DatabaseSync(absolutePath);
-  db.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-  if (absolutePath !== ":memory:") db.exec("PRAGMA journal_mode = WAL;");
-  migrate(db);
-  return db;
+  if (remoteUrl) {
+    if (!authToken) throw new Error("Configure TURSO_AUTH_TOKEN junto com TURSO_DATABASE_URL.");
+    client = createClient({ url: remoteUrl, authToken });
+  } else {
+    if (process.env.VERCEL) {
+      throw new Error("Configure TURSO_DATABASE_URL e TURSO_AUTH_TOKEN para persistência no Vercel.");
+    }
+    const absolutePath = resolveDatabaseFilePath(location);
+    if (absolutePath !== ":memory:") mkdirSync(dirname(absolutePath), { recursive: true });
+    const url = absolutePath === ":memory:" ? "file::memory:" : pathToFileURL(absolutePath).href;
+    client = createClient({ url });
+    await client.execute("PRAGMA foreign_keys = ON");
+  }
+
+  const db = new LibSqlDatabase(client);
+  try {
+    await migrate(db);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
 
-export function migrate(db: SqlDatabase): void {
+export async function migrate(db: SqlDatabase): Promise<void> {
   const migration = readFileSync(join(process.cwd(), "migrations", "001_initial.sql"), "utf8");
-  db.exec(migration);
-  db.prepare("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+  await db.exec(migration);
+  await db.prepare("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)")
     .run(migrationVersion, nowIso());
 }
 
-let singleton: SqlDatabase | undefined;
-export function getDatabase(): SqlDatabase {
-  singleton ??= createDatabase();
+async function createRuntimeDatabase(): Promise<SqlDatabase> {
+  const db = await createDatabase();
+  const row = await db.prepare("SELECT COUNT(*) AS total FROM users").get() as { total: number | bigint } | undefined;
+  if (Number(row?.total ?? 0) === 0) {
+    const { seedDemoData } = await import("./seed.ts");
+    await seedDemoData(db);
+  }
+  return db;
+}
+
+let singleton: Promise<SqlDatabase> | undefined;
+export function getDatabase(): Promise<SqlDatabase> {
+  singleton ??= createRuntimeDatabase().catch((error) => {
+    singleton = undefined;
+    throw error;
+  });
   return singleton;
 }
 
-export function closeDatabase(): void {
-  singleton?.close();
+export async function closeDatabase(): Promise<void> {
+  const db = await singleton;
+  db?.close();
   singleton = undefined;
 }
 
@@ -104,25 +175,25 @@ function ticketFromRow(row: Record<string, unknown>): Ticket {
   };
 }
 
-export function findUserByEmail(db: SqlDatabase, email: string): User | null {
-  const row = db.prepare("SELECT * FROM users WHERE email = ? COLLATE NOCASE").get(email) as Record<string, unknown> | undefined;
+export async function findUserByEmail(db: SqlDatabase, email: string): Promise<User | null> {
+  const row = await db.prepare("SELECT * FROM users WHERE email = ? COLLATE NOCASE").get(email) as Record<string, unknown> | undefined;
   return row ? userFromRow(row) : null;
 }
 
-export function findUserById(db: SqlDatabase, id: string): User | null {
-  const row = db.prepare("SELECT * FROM users WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+export async function findUserById(db: SqlDatabase, id: string): Promise<User | null> {
+  const row = await db.prepare("SELECT * FROM users WHERE id = ?").get(id) as Record<string, unknown> | undefined;
   return row ? userFromRow(row) : null;
 }
 
-export function listUsers(db: SqlDatabase, role?: User["role"]): User[] {
+export async function listUsers(db: SqlDatabase, role?: User["role"]): Promise<User[]> {
   const rows = role
-    ? db.prepare("SELECT * FROM users WHERE role = ? ORDER BY name").all(role)
-    : db.prepare("SELECT * FROM users ORDER BY name").all();
+    ? await db.prepare("SELECT * FROM users WHERE role = ? ORDER BY name").all(role)
+    : await db.prepare("SELECT * FROM users ORDER BY name").all();
   return rows.map((row) => userFromRow(row as Record<string, unknown>));
 }
 
-export function listTickets(db: SqlDatabase, ownerId: string): Ticket[] {
-  const rows = db.prepare(`
+export async function listTickets(db: SqlDatabase, ownerId: string): Promise<Ticket[]> {
+  const rows = await db.prepare(`
     SELECT t.*, u.name AS owner_name FROM tickets t
     JOIN users u ON u.id = t.owner_id
     WHERE t.owner_id = ?
@@ -131,8 +202,8 @@ export function listTickets(db: SqlDatabase, ownerId: string): Ticket[] {
   return rows.map((row) => ticketFromRow(row as Record<string, unknown>));
 }
 
-export function listAllTickets(db: SqlDatabase): Ticket[] {
-  const rows = db.prepare(`
+export async function listAllTickets(db: SqlDatabase): Promise<Ticket[]> {
+  const rows = await db.prepare(`
     SELECT t.*, u.name AS owner_name FROM tickets t
     JOIN users u ON u.id = t.owner_id
     ORDER BY t.updated_at DESC
@@ -140,8 +211,8 @@ export function listAllTickets(db: SqlDatabase): Ticket[] {
   return rows.map((row) => ticketFromRow(row as Record<string, unknown>));
 }
 
-export function findTicketByNumber(db: SqlDatabase, ownerId: string, number: string): Ticket | null {
-  const row = db.prepare(`
+export async function findTicketByNumber(db: SqlDatabase, ownerId: string, number: string): Promise<Ticket | null> {
+  const row = await db.prepare(`
     SELECT t.*, u.name AS owner_name FROM tickets t
     JOIN users u ON u.id = t.owner_id
     WHERE t.owner_id = ? AND upper(t.number) = upper(?)
@@ -149,20 +220,20 @@ export function findTicketByNumber(db: SqlDatabase, ownerId: string, number: str
   return row ? ticketFromRow(row) : null;
 }
 
-export function findTicketById(db: SqlDatabase, id: string): Ticket | null {
-  const row = db.prepare(`
+export async function findTicketById(db: SqlDatabase, id: string): Promise<Ticket | null> {
+  const row = await db.prepare(`
     SELECT t.*, u.name AS owner_name FROM tickets t
     JOIN users u ON u.id = t.owner_id WHERE t.id = ?
   `).get(id) as Record<string, unknown> | undefined;
   return row ? ticketFromRow(row) : null;
 }
 
-export function updateTicketRecord(
+export async function updateTicketRecord(
   db: SqlDatabase,
   ticketId: string,
   changes: { description: string; summary: string; status?: string; priority?: Ticket["priority"]; slaDueAt: string },
-): void {
-  db.prepare(`
+): Promise<void> {
+  await db.prepare(`
     UPDATE tickets SET description = ?, last_update_summary = ?, updated_at = ?, sla_due_at = ?,
       status = COALESCE(?, status), priority = COALESCE(?, priority)
     WHERE id = ?
@@ -177,13 +248,13 @@ export function updateTicketRecord(
   );
 }
 
-export function createTicketRecord(
+export async function createTicketRecord(
   db: SqlDatabase,
   ticket: Omit<Ticket, "id" | "createdAt" | "updatedAt" | "ownerName" | "lastUpdateSummary">,
-): Ticket {
+): Promise<Ticket> {
   const id = newId();
   const timestamp = nowIso();
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO tickets(id, number, owner_id, title, description, type, category, priority, status,
       affected_scope, assigned_group, created_at, updated_at, sla_due_at, last_update_summary)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -192,13 +263,13 @@ export function createTicketRecord(
     ticket.category, ticket.priority, ticket.status, ticket.affectedScope, ticket.assignedGroup,
     timestamp, timestamp, ticket.slaDueAt, "Chamado criado pelo Nexo Assist.",
   );
-  const saved = findTicketById(db, id);
+  const saved = await findTicketById(db, id);
   if (!saved) throw new Error("O chamado foi inserido, mas não pôde ser lido novamente.");
   return saved;
 }
 
-export function listArticles(db: SqlDatabase): KnowledgeArticle[] {
-  return db.prepare("SELECT * FROM knowledge_articles ORDER BY title").all().map((item) => {
+export async function listArticles(db: SqlDatabase): Promise<KnowledgeArticle[]> {
+  return (await db.prepare("SELECT * FROM knowledge_articles ORDER BY title").all()).map((item) => {
     const row = item as Record<string, unknown>;
     return {
       id: String(row.id),
@@ -226,50 +297,50 @@ function conversationFromRow(row: Record<string, unknown>): Conversation {
   };
 }
 
-export function createConversation(db: SqlDatabase, userId: string): Conversation {
+export async function createConversation(db: SqlDatabase, userId: string): Promise<Conversation> {
   const id = newId();
   const timestamp = nowIso();
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO conversations(id, user_id, state, created_at, updated_at, session_message_count)
     VALUES (?, ?, 'agent', ?, ?, 0)
   `).run(id, userId, timestamp, timestamp);
-  return findConversationById(db, id)!;
+  return (await findConversationById(db, id))!;
 }
 
-export function findConversationById(db: SqlDatabase, id: string): Conversation | null {
-  const row = db.prepare("SELECT * FROM conversations WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+export async function findConversationById(db: SqlDatabase, id: string): Promise<Conversation | null> {
+  const row = await db.prepare("SELECT * FROM conversations WHERE id = ?").get(id) as Record<string, unknown> | undefined;
   return row ? conversationFromRow(row) : null;
 }
 
-export function listConversationsForUser(db: SqlDatabase, userId: string): Conversation[] {
-  return db.prepare(`
+export async function listConversationsForUser(db: SqlDatabase, userId: string): Promise<Conversation[]> {
+  return (await db.prepare(`
     SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC
-  `).all(userId).map((row) => conversationFromRow(row as Record<string, unknown>));
+  `).all(userId)).map((row) => conversationFromRow(row as Record<string, unknown>));
 }
 
-export function deleteConversationRecord(db: SqlDatabase, conversationId: string, userId: string): boolean {
-  const result = db.prepare(`
+export async function deleteConversationRecord(db: SqlDatabase, conversationId: string, userId: string): Promise<boolean> {
+  const result = await db.prepare(`
     DELETE FROM conversations
     WHERE id = ? AND user_id = ? AND state IN ('agent', 'closed')
   `).run(conversationId, userId);
   return Number(result.changes) === 1;
 }
 
-export function listQueueConversations(db: SqlDatabase): Conversation[] {
-  return db.prepare(`
+export async function listQueueConversations(db: SqlDatabase): Promise<Conversation[]> {
+  return (await db.prepare(`
     SELECT * FROM conversations WHERE state IN ('waiting', 'human') ORDER BY updated_at ASC
-  `).all().map((row) => conversationFromRow(row as Record<string, unknown>));
+  `).all()).map((row) => conversationFromRow(row as Record<string, unknown>));
 }
 
-export function updateConversation(
+export async function updateConversation(
   db: SqlDatabase,
   id: string,
   changes: Partial<Pick<Conversation, "state" | "draft" | "activeTicketId" | "assignedAnalystId" | "handoffReason" | "handoffSummary">>,
-): void {
-  const current = findConversationById(db, id);
+): Promise<void> {
+  const current = await findConversationById(db, id);
   if (!current) throw new Error("Conversa não encontrada.");
   const updated = { ...current, ...changes };
-  db.prepare(`
+  await db.prepare(`
     UPDATE conversations SET state = ?, draft_json = ?, active_ticket_id = ?, assigned_analyst_id = ?,
       handoff_reason = ?, handoff_summary = ?, updated_at = ? WHERE id = ?
   `).run(
@@ -284,19 +355,19 @@ export function updateConversation(
   );
 }
 
-export function incrementSessionCount(db: SqlDatabase, id: string, amount = 1): number {
-  db.prepare(`
+export async function incrementSessionCount(db: SqlDatabase, id: string, amount = 1): Promise<number> {
+  await db.prepare(`
     UPDATE conversations SET session_message_count = session_message_count + ?, updated_at = ? WHERE id = ?
   `).run(amount, nowIso(), id);
-  return findConversationById(db, id)?.sessionMessageCount ?? 0;
+  return (await findConversationById(db, id))?.sessionMessageCount ?? 0;
 }
 
-export function addMessage(
+export async function addMessage(
   db: SqlDatabase,
   input: Omit<ChatMessage, "id" | "createdAt">,
-): ChatMessage {
+): Promise<ChatMessage> {
   const message: ChatMessage = { ...input, id: newId(), createdAt: nowIso() };
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO messages(id, conversation_id, sender_id, sender_role, body, actions_json, decision_json, payload_json, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
@@ -313,8 +384,8 @@ export function addMessage(
   return message;
 }
 
-export function listMessages(db: SqlDatabase, conversationId: string): ChatMessage[] {
-  return db.prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at, rowid").all(conversationId)
+export async function listMessages(db: SqlDatabase, conversationId: string): Promise<ChatMessage[]> {
+  return (await db.prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at, rowid").all(conversationId))
     .map((item) => {
       const row = item as Record<string, unknown>;
       return {
@@ -331,21 +402,21 @@ export function listMessages(db: SqlDatabase, conversationId: string): ChatMessa
     });
 }
 
-export function recordConversationEvent(
+export async function recordConversationEvent(
   db: SqlDatabase,
   conversationId: string,
   actorId: string | null,
   eventType: string,
   details: Record<string, unknown> = {},
-): void {
-  db.prepare(`
+): Promise<void> {
+  await db.prepare(`
     INSERT INTO conversation_events(id, conversation_id, actor_id, event_type, details_json, created_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(newId(), conversationId, actorId, eventType, JSON.stringify(details), nowIso());
 }
 
-export function countConversationEvents(db: SqlDatabase, conversationId: string, eventType: string): number {
-  const row = db.prepare("SELECT COUNT(*) AS total FROM conversation_events WHERE conversation_id = ? AND event_type = ?")
+export async function countConversationEvents(db: SqlDatabase, conversationId: string, eventType: string): Promise<number> {
+  const row = await db.prepare("SELECT COUNT(*) AS total FROM conversation_events WHERE conversation_id = ? AND event_type = ?")
     .get(conversationId, eventType) as { total: number };
   return Number(row.total);
 }

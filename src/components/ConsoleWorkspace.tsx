@@ -45,9 +45,12 @@ export function ConsoleWorkspace({ analyst, initialQueue }: { analyst: User; ini
   }, []);
 
   useEffect(() => {
-    const interval = window.setInterval(() => void refresh(), 4000);
+    const interval = window.setInterval(() => {
+      if (busy || document.visibilityState === "hidden") return;
+      void refresh();
+    }, 4000);
     return () => window.clearInterval(interval);
-  }, [refresh]);
+  }, [refresh, busy]);
 
   const filteredQueue = useMemo(() => queue.filter((item) => {
     if (filter === "mine" && item.conversation.assignedAnalystId !== analyst.id) return false;

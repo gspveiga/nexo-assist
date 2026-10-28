@@ -44,8 +44,8 @@ function quick(label: string, value: string): QuickAction {
   return { label, value };
 }
 
-function assertOwnedConversation(db: SqlDatabase, conversationId: string, user: User): Conversation {
-  const conversation = findConversationById(db, conversationId);
+async function assertOwnedConversation(db: SqlDatabase, conversationId: string, user: User): Promise<Conversation> {
+  const conversation = await findConversationById(db, conversationId);
   if (!conversation || conversation.userId !== user.id) throw new ServiceError("Conversa não encontrada.", 404, "CONVERSATION_NOT_FOUND");
   return conversation;
 }
@@ -54,15 +54,15 @@ function makeTrace(intent: string, action: string, confidence: number, reason: s
   return { intent, action, confidence, reason, tool, outcome };
 }
 
-function reply(
+async function reply(
   db: SqlDatabase,
   conversationId: string,
   body: string,
   decision: DecisionTrace,
   actions: QuickAction[] = [],
   payload?: ChatMessage["payload"],
-): ChatMessage {
-  const message = addMessage(db, {
+): Promise<ChatMessage> {
+  const message = await addMessage(db, {
     conversationId,
     senderId: null,
     senderRole: "assistant",
@@ -71,7 +71,7 @@ function reply(
     decision,
     payload,
   });
-  incrementSessionCount(db, conversationId);
+  await incrementSessionCount(db, conversationId);
   return message;
 }
 
@@ -81,23 +81,23 @@ function actionMessage(raw: string): { command: string; value?: string } {
   return { command: match[1].toLocaleLowerCase("pt-BR"), value: match[2] };
 }
 
-function getOpenTicketById(db: SqlDatabase, userId: string, id: string): Ticket | null {
-  const ticket = findTicketById(db, id);
+async function getOpenTicketById(db: SqlDatabase, userId: string, id: string): Promise<Ticket | null> {
+  const ticket = await findTicketById(db, id);
   if (!ticket || ticket.ownerId !== userId) return null;
   return ticket;
 }
 
-function findSimilarActiveTicket(db: SqlDatabase, user: User, text: string, category: Ticket["category"]): Ticket | null {
-  return listTickets(db, user.id)
+async function findSimilarActiveTicket(db: SqlDatabase, user: User, text: string, category: Ticket["category"]): Promise<Ticket | null> {
+  return (await listTickets(db, user.id))
     .filter((ticket) => activeStatuses.has(ticket.status) && ticket.category === category)
     .map((ticket) => ({ ticket, score: similarity(text, `${ticket.title} ${ticket.description}`) }))
     .filter((item) => item.score >= 0.35)
     .sort((a, b) => b.score - a.score)[0]?.ticket ?? null;
 }
 
-function findSimilarRecentlyResolved(db: SqlDatabase, user: User, text: string, category: Ticket["category"]): Ticket | null {
+async function findSimilarRecentlyResolved(db: SqlDatabase, user: User, text: string, category: Ticket["category"]): Promise<Ticket | null> {
   const now = Date.now();
-  return listTickets(db, user.id)
+  return (await listTickets(db, user.id))
     .filter((ticket) => ticket.status === "Resolvido" && ticket.category === category && now - new Date(ticket.updatedAt).getTime() <= 7 * 24 * 60 * 60_000)
     .map((ticket) => ({ ticket, score: similarity(text, `${ticket.title} ${ticket.description}`) }))
     .filter((item) => item.score >= 0.3)
@@ -115,11 +115,11 @@ function updateNoteFromText(text: string, ticketNumber: string | null): string {
   return note.length >= 3 ? note : "";
 }
 
-function makeDraft(userText: string, user: User, db: SqlDatabase, scope = inferAffectedScope(userText)): TicketDraft {
+async function makeDraft(userText: string, user: User, db: SqlDatabase, scope = inferAffectedScope(userText)): Promise<TicketDraft> {
   const category = inferCategory(userText);
   const type = inferType(userText);
   const priority = inferPriority(userText, scope, type);
-  const similar = findSimilarActiveTicket(db, user, userText, category);
+  const similar = await findSimilarActiveTicket(db, user, userText, category);
   if (similar) {
     return {
       operation: "update",
@@ -136,7 +136,7 @@ function makeDraft(userText: string, user: User, db: SqlDatabase, scope = inferA
       reason: `Já existe um chamado aberto relacionado (${similar.number}); vou complementar esse registro para evitar duplicidade.`,
     };
   }
-  const resolved = findSimilarRecentlyResolved(db, user, userText, category);
+  const resolved = await findSimilarRecentlyResolved(db, user, userText, category);
   if (resolved) {
     return {
       operation: "reopen",
@@ -181,10 +181,10 @@ function draftActions(): QuickAction[] {
   return actions;
 }
 
-function presentDraft(db: SqlDatabase, conversationId: string, draft: TicketDraft): ChatMessage {
-  updateConversation(db, conversationId, { draft });
+async function presentDraft(db: SqlDatabase, conversationId: string, draft: TicketDraft): Promise<ChatMessage> {
+  await updateConversation(db, conversationId, { draft });
   if (draft.awaitingDescription) {
-    return reply(
+    return await reply(
       db,
       conversationId,
       "O que está acontecendo ou o que você precisa solicitar? Uma frase com o sistema e o erro já ajuda.",
@@ -192,7 +192,7 @@ function presentDraft(db: SqlDatabase, conversationId: string, draft: TicketDraf
     );
   }
   if (draft.awaitingNote) {
-    return reply(
+    return await reply(
       db,
       conversationId,
       `O chamado ${draft.ticketNumber} pertence a você. O que devo adicionar ao histórico? Vou mostrar a atualização para confirmação antes de salvar.`,
@@ -200,7 +200,7 @@ function presentDraft(db: SqlDatabase, conversationId: string, draft: TicketDraf
     );
   }
   if (!draft.affectedScope && draft.operation === "create") {
-    return reply(
+    return await reply(
       db,
       conversationId,
       "Quem está sendo afetado por esse problema?",
@@ -213,7 +213,7 @@ function presentDraft(db: SqlDatabase, conversationId: string, draft: TicketDraf
   const summary = draft.operation === "create"
     ? draft.description
     : `${draft.description}\n\nNova informação: ${draft.pendingNote ?? ""}`;
-  return reply(
+  return await reply(
     db,
     conversationId,
     `${draft.reason}\n\nConfira o rascunho antes de confirmar:`,
@@ -223,15 +223,15 @@ function presentDraft(db: SqlDatabase, conversationId: string, draft: TicketDraf
   );
 }
 
-function nextTicketNumber(db: SqlDatabase, type: Ticket["type"]): string {
-  const rows = db.prepare("SELECT number FROM tickets WHERE number LIKE ?").all(`${type}-%`) as Array<{ number: string }>;
+async function nextTicketNumber(db: SqlDatabase, type: Ticket["type"]): Promise<string> {
+  const rows = await db.prepare("SELECT number FROM tickets WHERE number LIKE ?").all(`${type}-%`) as Array<{ number: string }>;
   const firstNumber = type === "INC" ? 20500 : 10442;
   const highest = rows.reduce((maximum, row) => Math.max(maximum, Number(row.number.split("-")[1]) || 0), firstNumber);
   return `${type}-${highest + 1}`;
 }
 
-function handoffSummary(db: SqlDatabase, conversationId: string, user: User, reason: string, ticket?: Ticket): string {
-  const recent = listMessages(db, conversationId).slice(-8).map((message) => `${message.senderRole}: ${message.body}`).join("\n");
+async function handoffSummary(db: SqlDatabase, conversationId: string, user: User, reason: string, ticket?: Ticket): Promise<string> {
+  const recent = (await listMessages(db, conversationId)).slice(-8).map((message) => `${message.senderRole}: ${message.body}`).join("\n");
   return [
     `Solicitante: ${user.name} (${user.department}).`,
     ticket ? `Chamado relacionado: ${ticket.number} · ${ticket.title} · ${ticket.priority}.` : "",
@@ -241,7 +241,7 @@ function handoffSummary(db: SqlDatabase, conversationId: string, user: User, rea
   ].filter(Boolean).join("\n");
 }
 
-function transferToHuman(
+async function transferToHuman(
   db: SqlDatabase,
   conversation: Conversation,
   user: User,
@@ -249,18 +249,18 @@ function transferToHuman(
   confidence: number,
   ticket?: Ticket,
   notify = true,
-): void {
-  const summary = handoffSummary(db, conversation.id, user, reason, ticket);
-  updateConversation(db, conversation.id, {
+): Promise<void> {
+  const summary = await handoffSummary(db, conversation.id, user, reason, ticket);
+  await updateConversation(db, conversation.id, {
     state: "waiting",
     handoffReason: reason,
     handoffSummary: summary,
     activeTicketId: ticket?.id ?? conversation.activeTicketId,
     assignedAnalystId: null,
   });
-  recordConversationEvent(db, conversation.id, user.id, "transferred", { reason, ticketNumber: ticket?.number ?? null, confidence });
+  await recordConversationEvent(db, conversation.id, user.id, "transferred", { reason, ticketNumber: ticket?.number ?? null, confidence });
   if (notify) {
-    reply(
+    await reply(
       db,
       conversation.id,
       `Encaminhei sua conversa para o Suporte N2${ticket ? `, junto com o chamado ${ticket.number}` : ""}. Um analista vai continuar o atendimento. O Nexo Assist ficará pausado até alguém assumir.`,
@@ -270,13 +270,13 @@ function transferToHuman(
   }
 }
 
-function createOrUpdateDraft(db: SqlDatabase, conversation: Conversation, user: User, text: string): ChatMessage {
-  const draft = makeDraft(text, user, db);
+async function createOrUpdateDraft(db: SqlDatabase, conversation: Conversation, user: User, text: string): Promise<ChatMessage> {
+  const draft = await makeDraft(text, user, db);
   if (draft.operation !== "create" && draft.affectedScope) draft.awaitingNote = false;
-  return presentDraft(db, conversation.id, draft);
+  return await presentDraft(db, conversation.id, draft);
 }
 
-function findTicketFromText(db: SqlDatabase, user: User, ticketNumber: string | null): Ticket | null {
+async function findTicketFromText(db: SqlDatabase, user: User, ticketNumber: string | null): Promise<Ticket | null> {
   return ticketNumber ? findTicketByNumber(db, user.id, ticketNumber) : null;
 }
 
@@ -292,12 +292,12 @@ function ticketCardActions(ticket: Ticket): QuickAction[] {
   return actions;
 }
 
-function showTicket(db: SqlDatabase, conversationId: string, ticket: Ticket): ChatMessage {
+async function showTicket(db: SqlDatabase, conversationId: string, ticket: Ticket): Promise<ChatMessage> {
   const overdue = isOverdue(ticket.slaDueAt) && activeStatuses.has(ticket.status);
   const body = overdue
     ? `${ticketStatusLine(ticket)}. Está sem atualização desde ${formatShortDate(ticket.updatedAt)}, acima do prazo da prioridade ${ticket.priority.toLocaleLowerCase("pt-BR")}. Quer que eu chame um analista?`
     : `${ticketStatusLine(ticket)}. ${ticket.lastUpdateSummary || "Não há novas informações registradas."}`;
-  return reply(
+  return await reply(
     db,
     conversationId,
     body,
@@ -307,10 +307,10 @@ function showTicket(db: SqlDatabase, conversationId: string, ticket: Ticket): Ch
   );
 }
 
-function listUserTickets(db: SqlDatabase, conversationId: string, user: User): ChatMessage {
-  const tickets = openTickets(listTickets(db, user.id));
+async function listUserTickets(db: SqlDatabase, conversationId: string, user: User): Promise<ChatMessage> {
+  const tickets = openTickets(await listTickets(db, user.id));
   if (!tickets.length) {
-    return reply(
+    return await reply(
       db,
       conversationId,
       "Não encontrei chamados abertos em seu nome. Posso procurar uma resposta na central de ajuda ou ajudar a abrir um chamado.",
@@ -318,8 +318,8 @@ function listUserTickets(db: SqlDatabase, conversationId: string, user: User): C
       [quick("Abrir chamado", "abrir:novo"), quick("Central de ajuda", "faq:ajuda")],
     );
   }
-  if (tickets.length === 1) return showTicket(db, conversationId, tickets[0]);
-  return reply(
+  if (tickets.length === 1) return await showTicket(db, conversationId, tickets[0]);
+  return await reply(
     db,
     conversationId,
     `Você tem ${tickets.length} chamados em andamento. Sobre qual deles quer saber?`,
@@ -329,10 +329,10 @@ function listUserTickets(db: SqlDatabase, conversationId: string, user: User): C
   );
 }
 
-function askUpdateTarget(db: SqlDatabase, conversationId: string, user: User, number: string | null): ChatMessage {
-  const ticket = findTicketFromText(db, user, number);
+async function askUpdateTarget(db: SqlDatabase, conversationId: string, user: User, number: string | null): Promise<ChatMessage> {
+  const ticket = await findTicketFromText(db, user, number);
   if (number && !ticket) {
-    return reply(
+    return await reply(
       db,
       conversationId,
       "Não encontrei esse chamado entre os registros da sua conta. Confira o número ou consulte seus chamados.",
@@ -342,7 +342,7 @@ function askUpdateTarget(db: SqlDatabase, conversationId: string, user: User, nu
   }
   if (ticket) {
     if (ticket.status === "Resolvido" && Date.now() - new Date(ticket.updatedAt).getTime() > 7 * 24 * 60 * 60_000) {
-      return reply(
+      return await reply(
         db,
         conversationId,
         `O chamado ${ticket.number} foi resolvido há mais de 7 dias. Posso abrir um novo chamado com essa informação.`,
@@ -364,12 +364,12 @@ function askUpdateTarget(db: SqlDatabase, conversationId: string, user: User, nu
       sourceMessage: "",
       reason: ticket.status === "Resolvido" ? "Chamado resolvido recentemente; a confirmação reabrirá o mesmo registro." : "A atualização será anexada ao chamado existente após sua confirmação.",
     };
-    return presentDraft(db, conversationId, draft);
+    return await presentDraft(db, conversationId, draft);
   }
-  const tickets = openTickets(listTickets(db, user.id));
-  if (tickets.length === 1) return askUpdateTarget(db, conversationId, user, tickets[0].number);
+  const tickets = openTickets(await listTickets(db, user.id));
+  if (tickets.length === 1) return await askUpdateTarget(db, conversationId, user, tickets[0].number);
   if (tickets.length > 1) {
-    return reply(
+    return await reply(
       db,
       conversationId,
       "Qual chamado quer complementar?",
@@ -378,7 +378,7 @@ function askUpdateTarget(db: SqlDatabase, conversationId: string, user: User, nu
       { tickets },
     );
   }
-  return reply(
+  return await reply(
     db,
     conversationId,
     "Não encontrei chamados abertos em seu nome. Se quiser, descreva o problema e posso montar um novo rascunho.",
@@ -387,11 +387,11 @@ function askUpdateTarget(db: SqlDatabase, conversationId: string, user: User, nu
   );
 }
 
-function beginUpdate(db: SqlDatabase, conversationId: string, user: User, number: string | null, text: string): ChatMessage {
-  const ticket = findTicketFromText(db, user, number);
-  if (!ticket) return askUpdateTarget(db, conversationId, user, number);
+async function beginUpdate(db: SqlDatabase, conversationId: string, user: User, number: string | null, text: string): Promise<ChatMessage> {
+  const ticket = await findTicketFromText(db, user, number);
+  if (!ticket) return await askUpdateTarget(db, conversationId, user, number);
   if (ticket.status === "Resolvido" && Date.now() - new Date(ticket.updatedAt).getTime() > 7 * 24 * 60 * 60_000) {
-    return askUpdateTarget(db, conversationId, user, number);
+    return await askUpdateTarget(db, conversationId, user, number);
   }
   const pendingNote = updateNoteFromText(text, number);
   const draft: TicketDraft = {
@@ -409,18 +409,18 @@ function beginUpdate(db: SqlDatabase, conversationId: string, user: User, number
     sourceMessage: text,
     reason: ticket.status === "Resolvido" ? "Chamado resolvido recentemente; a confirmação reabrirá o mesmo registro." : "A informação será adicionada ao chamado existente após sua confirmação.",
   };
-  return presentDraft(db, conversationId, draft);
+  return await presentDraft(db, conversationId, draft);
 }
 
-function confirmDraft(db: SqlDatabase, conversation: Conversation, user: User, draft: TicketDraft): ChatMessage {
+async function confirmDraft(db: SqlDatabase, conversation: Conversation, user: User, draft: TicketDraft): Promise<ChatMessage> {
   if (!draft.title.trim() || !draft.description.trim() || !draft.category || !draft.type || !draft.priority) {
     throw new ServiceError("O rascunho ainda precisa de título, descrição, tipo, categoria e prioridade.");
   }
   if (draft.operation === "create" && !draft.affectedScope) {
-    return reply(db, conversation.id, "Antes de confirmar, preciso saber quem está sendo afetado.", makeTrace("abertura", "coletou_impacto", 0.9, "A abrangência é obrigatória no chamado.", "validar_rascunho", "needs_input"), scopeActions());
+    return await reply(db, conversation.id, "Antes de confirmar, preciso saber quem está sendo afetado.", makeTrace("abertura", "coletou_impacto", 0.9, "A abrangência é obrigatória no chamado.", "validar_rascunho", "needs_input"), scopeActions());
   }
   if (draft.operation === "create") {
-    const duplicate = findSimilarActiveTicket(db, user, draft.sourceMessage, draft.category);
+    const duplicate = await findSimilarActiveTicket(db, user, draft.sourceMessage, draft.category);
     if (duplicate) {
       const update: TicketDraft = {
         ...draft,
@@ -436,10 +436,10 @@ function confirmDraft(db: SqlDatabase, conversation: Conversation, user: User, d
         pendingNote: draft.sourceMessage,
         reason: `Antes de criar, encontrei o chamado aberto ${duplicate.number} para o mesmo assunto. Vou complementar esse chamado para não duplicar.`,
       };
-      return presentDraft(db, conversation.id, update);
+      return await presentDraft(db, conversation.id, update);
     }
-    const number = nextTicketNumber(db, draft.type);
-    const ticket = createTicketRecord(db, {
+    const number = await nextTicketNumber(db, draft.type);
+    const ticket = await createTicketRecord(db, {
       number,
       ownerId: user.id,
       title: draft.title,
@@ -452,11 +452,11 @@ function confirmDraft(db: SqlDatabase, conversation: Conversation, user: User, d
       assignedGroup: draft.priority === "Crítica" ? "Suporte N2" : "Suporte N1",
       slaDueAt: calculateSlaDueAt(draft.priority),
     });
-    recordConversationEvent(db, conversation.id, user.id, "ticket_created", { ticketNumber: ticket.number });
-    updateConversation(db, conversation.id, { draft: null, activeTicketId: ticket.id });
+    await recordConversationEvent(db, conversation.id, user.id, "ticket_created", { ticketNumber: ticket.number });
+    await updateConversation(db, conversation.id, { draft: null, activeTicketId: ticket.id });
     if (ticket.priority === "Crítica") {
-      transferToHuman(db, { ...conversation, activeTicketId: ticket.id }, user, "O chamado foi classificado como crítico pelo impacto amplo e pela interrupção do serviço.", 0.96, ticket, false);
-      return reply(
+      await transferToHuman(db, { ...conversation, activeTicketId: ticket.id }, user, "O chamado foi classificado como crítico pelo impacto amplo e pela interrupção do serviço.", 0.96, ticket, false);
+      return await reply(
         db,
         conversation.id,
         `Pronto: criei o chamado ${ticket.number} com prioridade crítica e SLA de 1 hora. Também encaminhei a conversa ao Suporte N2.`,
@@ -465,7 +465,7 @@ function confirmDraft(db: SqlDatabase, conversation: Conversation, user: User, d
         { ticket },
       );
     }
-    return reply(
+    return await reply(
       db,
       conversation.id,
       `Pronto: criei o chamado ${ticket.number} com prioridade ${ticket.priority.toLocaleLowerCase("pt-BR")}. ${prioritySlaLabel(ticket.priority)}.`,
@@ -476,14 +476,14 @@ function confirmDraft(db: SqlDatabase, conversation: Conversation, user: User, d
   }
 
   if (!draft.ticketId || !draft.ticketNumber || !draft.pendingNote?.trim()) {
-    return reply(
+    return await reply(
       db,
       conversation.id,
       "Ainda preciso da informação que você quer adicionar ao chamado.",
       makeTrace("complemento", "solicitou_detalhe", 0.9, "Não há uma informação adicional no rascunho.", "validar_atualizacao", "needs_input"),
     );
   }
-  const ticket = getOpenTicketById(db, user.id, draft.ticketId);
+  const ticket = await getOpenTicketById(db, user.id, draft.ticketId);
   if (!ticket) throw new ServiceError("Esse chamado não pertence à sua conta.", 403, "TICKET_FORBIDDEN");
   const reopening = draft.operation === "reopen";
   if (reopening && (ticket.status !== "Resolvido" || Date.now() - new Date(ticket.updatedAt).getTime() > 7 * 24 * 60 * 60_000)) {
@@ -491,17 +491,17 @@ function confirmDraft(db: SqlDatabase, conversation: Conversation, user: User, d
   }
   const nextDescription = `${ticket.description}\n\nAtualização ${formatDateTime(nowIso())}: ${draft.pendingNote.trim()}`;
   const nextStatus = reopening ? "Reaberto" : undefined;
-  updateTicketRecord(db, ticket.id, {
+  await updateTicketRecord(db, ticket.id, {
     description: nextDescription,
     summary: draft.pendingNote.trim(),
     status: nextStatus,
     slaDueAt: calculateSlaDueAt(ticket.priority),
   });
-  recordConversationEvent(db, conversation.id, user.id, reopening ? "ticket_reopened" : "ticket_updated", { ticketNumber: ticket.number });
-  const updated = findTicketById(db, ticket.id);
+  await recordConversationEvent(db, conversation.id, user.id, reopening ? "ticket_reopened" : "ticket_updated", { ticketNumber: ticket.number });
+  const updated = await findTicketById(db, ticket.id);
   if (!updated) throw new Error("A atualização foi gravada, mas o chamado não pôde ser recuperado.");
-  updateConversation(db, conversation.id, { draft: null, activeTicketId: updated.id });
-  return reply(
+  await updateConversation(db, conversation.id, { draft: null, activeTicketId: updated.id });
+  return await reply(
     db,
     conversation.id,
     `${reopening ? "Reabri" : "Atualizei"} o chamado ${updated.number}. ${prioritySlaLabel(updated.priority)} para a próxima atualização.`,
@@ -511,20 +511,20 @@ function confirmDraft(db: SqlDatabase, conversation: Conversation, user: User, d
   );
 }
 
-function handlePendingDraft(db: SqlDatabase, conversation: Conversation, user: User, text: string): ChatMessage {
+async function handlePendingDraft(db: SqlDatabase, conversation: Conversation, user: User, text: string): Promise<ChatMessage> {
   const draft = conversation.draft!;
   if (looksLikeCancellation(text) || normalized(text).startsWith("cancelar:")) {
-    updateConversation(db, conversation.id, { draft: null });
-    return reply(db, conversation.id, "Cancelei o rascunho. Nenhum chamado foi criado ou alterado.", makeTrace("rascunho", "cancelou", 0.99, "Cancelamento solicitado pelo funcionário.", "cancelar_rascunho", "success"));
+    await updateConversation(db, conversation.id, { draft: null });
+    return await reply(db, conversation.id, "Cancelei o rascunho. Nenhum chamado foi criado ou alterado.", makeTrace("rascunho", "cancelou", 0.99, "Cancelamento solicitado pelo funcionário.", "cancelar_rascunho", "success"));
   }
-  if (looksLikeConfirmation(text)) return confirmDraft(db, conversation, user, draft);
+  if (looksLikeConfirmation(text)) return await confirmDraft(db, conversation, user, draft);
   if (draft.awaitingDescription) {
-    return presentDraft(db, conversation.id, makeDraft(text, user, db, inferAffectedScope(text)));
+    return await presentDraft(db, conversation.id, await makeDraft(text, user, db, inferAffectedScope(text)));
   }
   if (draft.awaitingEdit) {
     if (draft.operation === "create") {
-      const edited = makeDraft(text, user, db, inferAffectedScope(text) ?? draft.affectedScope);
-      return presentDraft(db, conversation.id, edited);
+      const edited = await makeDraft(text, user, db, inferAffectedScope(text) ?? draft.affectedScope);
+      return await presentDraft(db, conversation.id, edited);
     }
     const edited: TicketDraft = {
       ...draft,
@@ -534,7 +534,7 @@ function handlePendingDraft(db: SqlDatabase, conversation: Conversation, user: U
       awaitingEdit: false,
       reason: `${draft.reason} O texto da atualização foi corrigido pelo funcionário e aguarda confirmação.`,
     };
-    return presentDraft(db, conversation.id, edited);
+    return await presentDraft(db, conversation.id, edited);
   }
 
   const command = actionMessage(text);
@@ -549,7 +549,7 @@ function handlePendingDraft(db: SqlDatabase, conversation: Conversation, user: U
       awaitingNote: false,
       reason: `${draft.reason} A informação foi capturada e aguarda confirmação.`,
     };
-    return presentDraft(db, conversation.id, next);
+    return await presentDraft(db, conversation.id, next);
   }
   if (draft.operation === "create" && !draft.affectedScope && scopeChoice) {
     const next: TicketDraft = {
@@ -557,28 +557,28 @@ function handlePendingDraft(db: SqlDatabase, conversation: Conversation, user: U
       affectedScope: scopeChoice,
       priority: inferPriority(draft.sourceMessage, scopeChoice, draft.type),
     };
-    return presentDraft(db, conversation.id, next);
+    return await presentDraft(db, conversation.id, next);
   }
   if (normalized(text).startsWith("editar") || normalized(text).startsWith("edit")) {
-    updateConversation(db, conversation.id, { draft: { ...draft, awaitingEdit: true } });
-    return reply(db, conversation.id, draft.operation === "create"
+    await updateConversation(db, conversation.id, { draft: { ...draft, awaitingEdit: true } });
+    return await reply(db, conversation.id, draft.operation === "create"
       ? "Envie a descrição corrigida, incluindo o sistema, o erro, quem foi afetado e a urgência. Vou classificar novamente e mostrar outra prévia."
       : "Escreva novamente a informação que quer acrescentar ao chamado. Vou mostrar a correção antes de salvar.",
     makeTrace("rascunho", "solicitou_correcao", 0.92, "O funcionário pediu para editar os dados antes de confirmar.", "editar_rascunho", "needs_input"));
   }
   if (draft.operation === "create") {
     const next = { ...draft, description: `${draft.description}\n\nDetalhe: ${text.trim()}`, sourceMessage: `${draft.sourceMessage} ${text.trim()}` };
-    return presentDraft(db, conversation.id, next);
+    return await presentDraft(db, conversation.id, next);
   }
   const next = { ...draft, pendingNote: text.trim(), awaitingNote: false };
-  return presentDraft(db, conversation.id, next);
+  return await presentDraft(db, conversation.id, next);
 }
 
-function handleFaq(db: SqlDatabase, conversationId: string, text: string): ChatMessage {
+async function handleFaq(db: SqlDatabase, conversationId: string, text: string): Promise<ChatMessage> {
   const faqCommand = text.match(/^faq:(.*)$/i)?.[1]?.trim();
   if (faqCommand?.toLocaleLowerCase("pt-BR") === "lista") {
-    const articles = listArticles(db);
-    return reply(
+    const articles = await listArticles(db);
+    return await reply(
       db,
       conversationId,
       `Central de ajuda: ${articles.map((article) => article.title).join(" · ")}. Escolha um artigo para abrir.`,
@@ -586,9 +586,9 @@ function handleFaq(db: SqlDatabase, conversationId: string, text: string): ChatM
       articles.map((article) => quick(article.title, `faq:${article.title}`)),
     );
   }
-  const matches = searchKnowledge(db, faqCommand || text);
+  const matches = await searchKnowledge(db, faqCommand || text);
   if (!matches.length) {
-    return reply(
+    return await reply(
       db,
       conversationId,
       "Não encontrei um artigo que responda a essa pergunta. Se você me contar o que acontece e quem está sendo afetado, preparo um rascunho de chamado.",
@@ -598,7 +598,7 @@ function handleFaq(db: SqlDatabase, conversationId: string, text: string): ChatM
   }
   const top = matches[0];
   if (top.score < 0.34) {
-    return reply(
+    return await reply(
       db,
       conversationId,
       "Encontrei um artigo possivelmente relacionado, mas não tenho segurança de que responda ao seu caso. Quer falar com um analista?",
@@ -608,7 +608,7 @@ function handleFaq(db: SqlDatabase, conversationId: string, text: string): ChatM
     );
   }
   const related = matches.slice(1).map((match) => `\n\nTambém pode ajudar: ${match.article.title}. ${match.article.content}`).join("");
-  return reply(
+  return await reply(
     db,
     conversationId,
     `${top.article.content}${related}`,
@@ -617,46 +617,46 @@ function handleFaq(db: SqlDatabase, conversationId: string, text: string): ChatM
   );
 }
 
-function handleTicketLookup(db: SqlDatabase, conversationId: string, user: User, text: string): ChatMessage {
+async function handleTicketLookup(db: SqlDatabase, conversationId: string, user: User, text: string): Promise<ChatMessage> {
   const number = extractTicketNumber(text);
-  const ticket = findTicketFromText(db, user, number);
+  const ticket = await findTicketFromText(db, user, number);
   if (number && !ticket) {
-    return reply(
+    return await reply(
       db,
       conversationId,
       "Não encontrei esse número entre os chamados da sua conta. Por privacidade, só posso mostrar registros que pertencem a você.",
       makeTrace("consulta", "bloqueou_acesso", 0.99, "O número informado não corresponde a chamado do usuário autenticado.", "validar_titularidade", "blocked"),
     );
   }
-  return ticket ? showTicket(db, conversationId, ticket) : listUserTickets(db, conversationId, user);
+  return ticket ? await showTicket(db, conversationId, ticket) : await listUserTickets(db, conversationId, user);
 }
 
-function handleHandoff(db: SqlDatabase, conversation: Conversation, user: User, reason: string, confidence: number, ticket?: Ticket): ChatMessage {
-  transferToHuman(db, conversation, user, reason, confidence, ticket);
-  return listMessages(db, conversation.id).at(-1)!;
+async function handleHandoff(db: SqlDatabase, conversation: Conversation, user: User, reason: string, confidence: number, ticket?: Ticket): Promise<ChatMessage> {
+  await transferToHuman(db, conversation, user, reason, confidence, ticket);
+  return (await listMessages(db, conversation.id)).at(-1)!;
 }
 
-function findTicketForTransfer(db: SqlDatabase, user: User, text: string): Ticket | undefined {
+async function findTicketForTransfer(db: SqlDatabase, user: User, text: string): Promise<Ticket | undefined> {
   const number = extractTicketNumber(text);
-  return number ? findTicketByNumber(db, user.id, number) ?? undefined : undefined;
+  return number ? (await findTicketByNumber(db, user.id, number)) ?? undefined : undefined;
 }
 
-function startCreationFromQuickAction(db: SqlDatabase, conversation: Conversation, user: User, text: string): ChatMessage {
+async function startCreationFromQuickAction(db: SqlDatabase, conversation: Conversation, user: User, text: string): Promise<ChatMessage> {
   const source = text.replace(/^(abrir|abrir chamado):/i, "").trim();
   const description = source && source.toLocaleLowerCase("pt-BR") !== "novo" ? source : "";
   if (!description) {
-    return reply(
+    return await reply(
       db,
       conversation.id,
       "Descreva o que aconteceu ou o que você precisa. Vou conferir a categoria, prioridade e os dados antes de criar qualquer chamado.",
       makeTrace("abertura", "coletou_descricao", 0.96, "A descrição é necessária antes de montar o rascunho.", "validar_entrada", "needs_input"),
     );
   }
-  return createOrUpdateDraft(db, conversation, user, description);
+  return await createOrUpdateDraft(db, conversation, user, description);
 }
 
-function findRecentMessages(db: SqlDatabase, conversationId: string): string[] {
-  return listMessages(db, conversationId).slice(-10).map((message) => `${message.senderRole}: ${message.body}`);
+async function findRecentMessages(db: SqlDatabase, conversationId: string): Promise<string[]> {
+  return (await listMessages(db, conversationId)).slice(-10).map((message) => `${message.senderRole}: ${message.body}`);
 }
 
 export async function processUserMessage(
@@ -669,11 +669,11 @@ export async function processUserMessage(
   if (!text) throw new ServiceError("Escreva uma mensagem antes de enviar.", 400, "MESSAGE_EMPTY");
   if (text.length > maxMessageLength) throw new ServiceError(`A mensagem deve ter até ${maxMessageLength} caracteres.`, 400, "MESSAGE_TOO_LONG");
 
-  let conversation = assertOwnedConversation(db, conversationId, user);
+  let conversation = await assertOwnedConversation(db, conversationId, user);
   if (conversation.state !== "agent") throw new ServiceError("Esta conversa está com um analista e o Nexo Assist está pausado.", 409, "AGENT_PAUSED");
   if (conversation.sessionMessageCount >= sessionMessageLimit) throw new ServiceError("Esta sessão chegou ao limite de 30 mensagens. Inicie uma nova conversa para continuar.", 409, "SESSION_LIMIT_REACHED");
 
-  addMessage(db, {
+  await addMessage(db, {
     conversationId,
     senderId: user.id,
     senderRole: "employee",
@@ -681,86 +681,86 @@ export async function processUserMessage(
     actions: [],
     decision: null,
   });
-  incrementSessionCount(db, conversationId);
-  conversation = findConversationById(db, conversationId)!;
+  await incrementSessionCount(db, conversationId);
+  conversation = (await findConversationById(db, conversationId))!;
 
   try {
     const command = actionMessage(text);
     let response: ChatMessage;
     if (conversation.draft) {
-      response = handlePendingDraft(db, conversation, user, text);
+      response = await handlePendingDraft(db, conversation, user, text);
     } else if (command.command === "abrangencia") {
-      response = reply(db, conversationId, "Não há rascunho ativo para informar a abrangência. Descreva o problema para começar.", makeTrace("abertura", "sem_rascunho", 0.9, "A escolha de abrangência não tem rascunho associado.", "validar_estado", "blocked"));
+      response = await reply(db, conversationId, "Não há rascunho ativo para informar a abrangência. Descreva o problema para começar.", makeTrace("abertura", "sem_rascunho", 0.9, "A escolha de abrangência não tem rascunho associado.", "validar_estado", "blocked"));
     } else if (command.command === "transferir") {
-      const ticket = findTicketFromText(db, user, command.value ?? null);
-      response = handleHandoff(db, conversation, user, "O funcionário escolheu falar com um analista.", 0.99, ticket ?? undefined);
+      const ticket = await findTicketFromText(db, user, command.value ?? null);
+      response = await handleHandoff(db, conversation, user, "O funcionário escolheu falar com um analista.", 0.99, ticket ?? undefined);
     } else if (command.command === "consultar" && command.value?.toLocaleLowerCase("pt-BR") === "lista") {
-      response = listUserTickets(db, conversationId, user);
+      response = await listUserTickets(db, conversationId, user);
     } else if (command.command === "consultar" && command.value) {
-      response = handleTicketLookup(db, conversationId, user, command.value);
+      response = await handleTicketLookup(db, conversationId, user, command.value);
     } else if (command.command === "complementar") {
-      response = askUpdateTarget(db, conversationId, user, command.value ? extractTicketNumber(command.value) : null);
+      response = await askUpdateTarget(db, conversationId, user, command.value ? extractTicketNumber(command.value) : null);
     } else if (command.command === "abrir") {
-      response = startCreationFromQuickAction(db, conversation, user, text);
+      response = await startCreationFromQuickAction(db, conversation, user, text);
     } else if (command.command === "faq") {
-      response = handleFaq(db, conversationId, text,);
+      response = await handleFaq(db, conversationId, text);
     } else if (/^(falar com um analista|quero falar com um analista)$/i.test(text)) {
-      response = handleHandoff(db, conversation, user, "O funcionário pediu atendimento humano.", 0.99);
+      response = await handleHandoff(db, conversation, user, "O funcionário pediu atendimento humano.", 0.99);
     } else {
       const decision = await routeMessage(text, db, {
         state: conversation.state,
         draft: conversation.draft,
-        recentMessages: findRecentMessages(db, conversationId),
+        recentMessages: await findRecentMessages(db, conversationId),
       });
       if (decision.mode === "local" && isOutOfScope(text)) {
-        response = reply(db, conversationId, "Posso ajudar somente com solicitações de TI. Para RH, financeiro ou facilities, use os canais internos dessas áreas.", makeTrace(decision.intent, "redirecionou_fora_escopo", decision.confidence, decision.reason, "validar_escopo", "blocked"));
+        response = await reply(db, conversationId, "Posso ajudar somente com solicitações de TI. Para RH, financeiro ou facilities, use os canais internos dessas áreas.", makeTrace(decision.intent, "redirecionou_fora_escopo", decision.confidence, decision.reason, "validar_escopo", "blocked"));
       } else if (decision.intent === "faq") {
-        response = handleFaq(db, conversationId, text);
+        response = await handleFaq(db, conversationId, text);
       } else if (decision.intent === "lookup") {
-        response = handleTicketLookup(db, conversationId, user, text);
+        response = await handleTicketLookup(db, conversationId, user, text);
       } else if (decision.intent === "update") {
         const number = decision.ticketNumber ?? extractTicketNumber(text);
-        response = beginUpdate(db, conversationId, user, number, text);
+        response = await beginUpdate(db, conversationId, user, number, text);
       } else if (decision.intent === "create") {
-        response = createOrUpdateDraft(db, conversation, user, text);
+        response = await createOrUpdateDraft(db, conversation, user, text);
       } else if (decision.intent === "handoff") {
-        response = handleHandoff(db, conversation, user, decision.reason, decision.confidence, findTicketForTransfer(db, user, text));
+        response = await handleHandoff(db, conversation, user, decision.reason, decision.confidence, await findTicketForTransfer(db, user, text));
       } else if (decision.intent === "out_of_scope") {
-        response = reply(db, conversationId, "Posso ajudar somente com solicitações de TI. Para essa demanda, use os canais internos da área responsável.", makeTrace(decision.intent, "redirecionou_fora_escopo", decision.confidence, decision.reason, "validar_escopo", "blocked"));
+        response = await reply(db, conversationId, "Posso ajudar somente com solicitações de TI. Para essa demanda, use os canais internos da área responsável.", makeTrace(decision.intent, "redirecionou_fora_escopo", decision.confidence, decision.reason, "validar_escopo", "blocked"));
       } else {
-        response = handleHandoff(db, conversation, user, "Não consegui escolher uma ação com segurança; encaminhei o contexto ao Suporte N2.", decision.confidence);
+        response = await handleHandoff(db, conversation, user, "Não consegui escolher uma ação com segurança; encaminhei o contexto ao Suporte N2.", decision.confidence);
       }
     }
     void response;
   } catch (error) {
     if (error instanceof ServiceError) {
-      reply(db, conversationId, error.message, makeTrace("validação", "não_executou_ação", 0.99, error.message, "validar_regra_de_negocio", "blocked"));
+      await reply(db, conversationId, error.message, makeTrace("validação", "não_executou_ação", 0.99, error.message, "validar_regra_de_negocio", "blocked"));
     } else if (error instanceof AgentProviderError) {
-      reply(db, conversationId, error.message, makeTrace("sistema", "falha_no_modelo", 0.3, error.message, "classificar_intencao", "error"));
+      await reply(db, conversationId, error.message, makeTrace("sistema", "falha_no_modelo", 0.3, error.message, "classificar_intencao", "error"));
     } else {
       console.error("Falha ao processar mensagem do Nexo Assist:", error);
-      reply(db, conversationId, "O service desk não conseguiu concluir essa operação agora. Sua mensagem foi mantida; tente novamente em instantes.", makeTrace("sistema", "falha_de_ferramenta", 0.3, "A operação falhou antes de ser confirmada.", "tratar_falha", "error"));
+      await reply(db, conversationId, "O service desk não conseguiu concluir essa operação agora. Sua mensagem foi mantida; tente novamente em instantes.", makeTrace("sistema", "falha_de_ferramenta", 0.3, "A operação falhou antes de ser confirmada.", "tratar_falha", "error"));
     }
   }
 
   return {
-    conversation: findConversationById(db, conversationId)!,
-    messages: listMessages(db, conversationId),
+    conversation: (await findConversationById(db, conversationId))!,
+    messages: await listMessages(db, conversationId),
   };
 }
 
-export function getConversationForUser(db: SqlDatabase, conversationId: string, user: User): { conversation: Conversation; messages: ChatMessage[] } {
-  const conversation = assertOwnedConversation(db, conversationId, user);
-  return { conversation, messages: listMessages(db, conversationId) };
+export async function getConversationForUser(db: SqlDatabase, conversationId: string, user: User): Promise<{ conversation: Conversation; messages: ChatMessage[] }> {
+  const conversation = await assertOwnedConversation(db, conversationId, user);
+  return { conversation, messages: await listMessages(db, conversationId) };
 }
 
-export function deleteConversationForUser(db: SqlDatabase, conversationId: string, user: User): void {
-  const conversation = assertOwnedConversation(db, conversationId, user);
+export async function deleteConversationForUser(db: SqlDatabase, conversationId: string, user: User): Promise<void> {
+  const conversation = await assertOwnedConversation(db, conversationId, user);
   if (conversation.state === "waiting" || conversation.state === "human") {
     throw new ServiceError("A conversa está com o service desk. Aguarde o encerramento ou devolva-a ao agente antes de excluir.", 409, "CONVERSATION_ACTIVE");
   }
-  if (!deleteConversationRecord(db, conversationId, user.id)) {
-    const latest = findConversationById(db, conversationId);
+  if (!await deleteConversationRecord(db, conversationId, user.id)) {
+    const latest = await findConversationById(db, conversationId);
     if (!latest || latest.userId !== user.id) {
       throw new ServiceError("Conversa não encontrada.", 404, "CONVERSATION_NOT_FOUND");
     }
@@ -768,7 +768,7 @@ export function deleteConversationForUser(db: SqlDatabase, conversationId: strin
   }
 }
 
-export function newConversation(db: SqlDatabase, user: User): Conversation {
+export async function newConversation(db: SqlDatabase, user: User): Promise<Conversation> {
   const conversation = {
     id: newId(),
     userId: user.id,
@@ -782,12 +782,12 @@ export function newConversation(db: SqlDatabase, user: User): Conversation {
     updatedAt: nowIso(),
     sessionMessageCount: 0,
   };
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO conversations(id, user_id, state, created_at, updated_at, session_message_count)
     VALUES (?, ?, ?, ?, ?, 0)
   `).run(conversation.id, user.id, conversation.state, conversation.createdAt, conversation.updatedAt);
   void result;
-  return findConversationById(db, conversation.id)!;
+  return (await findConversationById(db, conversation.id))!;
 }
 
 export function getSessionMessageLimit(): number {

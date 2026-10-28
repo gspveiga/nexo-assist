@@ -10,5 +10,5 @@ export default async function ConsolePage() {
   const analyst = await getCurrentUser();
   if (!analyst) redirect("/");
   if (analyst.role !== "analyst") redirect("/chat");
-  return <ConsoleWorkspace analyst={analyst} initialQueue={getConsoleQueue(getDatabase(), analyst)} />;
+  return <ConsoleWorkspace analyst={analyst} initialQueue={await getConsoleQueue(await getDatabase(), analyst)} />;
 }

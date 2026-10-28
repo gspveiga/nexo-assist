@@ -9,7 +9,7 @@ export async function getCurrentUser(): Promise<User | null> {
   const token = cookieStore.get(sessionCookieName)?.value;
   const session = verifySessionToken(token);
   if (!session) return null;
-  const user = findUserById(getDatabase(), session.userId);
+  const user = await findUserById(await getDatabase(), session.userId);
   if (!user || user.role !== session.role) return null;
   return user;
 }

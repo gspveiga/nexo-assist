@@ -12,8 +12,11 @@ export interface SessionPayload {
 }
 
 function secret(): string {
-  const configured = process.env.SESSION_SECRET;
-  if (process.env.NODE_ENV === "production" && (!configured || configured.length < 32 || configured === "change-me-to-a-long-random-secret")) {
+  const configured = process.env.SESSION_SECRET?.trim();
+  if (
+    process.env.NODE_ENV === "production"
+    && (!configured || configured.length < 32 || configured === "change-me-to-a-long-random-secret" || configured === demoSecret)
+  ) {
     throw new Error("Configure SESSION_SECRET com pelo menos 32 caracteres aleatórios em produção.");
   }
   return configured || demoSecret;

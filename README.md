@@ -1,6 +1,8 @@
 # Nexo Assist
 
-Agente de atendimento de TI para a empresa fictícia Nexo. O funcionário conversa com o assistente, que consulta uma central de ajuda local, encontra e complementa chamados próprios, prepara novos chamados para confirmação e transfere casos a um analista. O projeto implementa os fluxos do desafio com persistência SQLite e uma interface inspirada nos protótipos fornecidos.
+Agente de atendimento de TI para a empresa fictícia Nexo. O funcionário conversa com o assistente, que consulta uma central de ajuda local, encontra e complementa chamados próprios, prepara novos chamados para confirmação e transfere casos a um analista. O projeto implementa os fluxos do desafio com persistência SQLite/libSQL e uma interface inspirada nos protótipos fornecidos.
+
+**Demo publicada (Vercel + Turso):** [https://nexo-assist-tau.vercel.app](https://nexo-assist-tau.vercel.app)
 
 ## Funcionalidades
 
@@ -19,9 +21,9 @@ Agente de atendimento de TI para a empresa fictícia Nexo. O funcionário conver
 
 - **Next.js 16 / React 19** para interface e Route Handlers HTTP.
 - **TypeScript estrito** nos componentes, contratos e serviços.
-- **SQLite (`node:sqlite`)** para usuários, conversas, mensagens, chamados, eventos e FAQ; sem serviço externo para a demonstração.
+- **SQLite/libSQL** para usuários, conversas, mensagens, chamados, eventos e FAQ. O modo local usa um arquivo SQLite; Vercel usa Turso/libSQL remoto para compartilhar estado persistente entre Functions.
 - **Mastra + Ollama + Qwen3 4B** para classificar mensagens ambíguas localmente com saída estruturada. Não exige chave de API; as intenções claras continuam no roteador determinístico para responder sem esperar o modelo.
-- **Node.js 22.22 ou superior**. `node:sqlite` e o strip de tipos do Node ainda são recursos experimentais nessa versão; o projeto não usa banco em memória na execução normal.
+- **Node.js 22.6 ou superior** para desenvolvimento/testes com strip de tipos do Node. Em hospedagem Vercel, use Node.js 22.x ou 24.x.
 
 ### Por que usar Ollama junto com Mastra
 
@@ -35,7 +37,7 @@ O **Qwen3 4B** foi escolhido para classificar mensagens que o roteador local nã
 
 Com `NEXO_AGENT_MODE=mastra`, mensagens ambíguas são enviadas ao serviço Ollama local em `127.0.0.1:11434`; não há credencial externa e a inferência não depende da internet depois que o modelo foi baixado. O Ollama precisa estar instalado, ativo e com o modelo disponível.
 
-O PRD permite simular o serviço externo de chamados, mas exige estado persistente. Por isso, o serviço de chamados é implementado no backend local, e seus registros são gravados em SQLite. A camada de agente apenas escolhe uma intenção; o backend valida titularidade, parâmetros e regras antes de qualquer operação. O roteador determinístico permanece disponível ao definir `NEXO_AGENT_MODE=local`.
+O PRD permite simular o serviço externo de chamados, mas exige estado persistente. Por isso, o serviço de chamados é implementado no backend, e seus registros são gravados em SQLite/libSQL. Em desenvolvimento, o banco é um arquivo local; na Vercel, a aplicação exige `TURSO_DATABASE_URL` e `TURSO_AUTH_TOKEN` e falha de forma explícita sem eles, em vez de usar o filesystem efêmero da Function. A camada de agente apenas escolhe uma intenção; o backend valida titularidade, parâmetros e regras antes de qualquer operação. O roteador determinístico permanece disponível ao definir `NEXO_AGENT_MODE=local`.
 
 ## Arquitetura
 
@@ -47,7 +49,7 @@ flowchart LR
   CHAT --> ROUTER[Roteador local ou Mastra estruturado]
   CHAT --> TOOLS[FAQ · consulta · atualização · abertura · transferência]
   TOOLS --> RULES[Validação · titularidade · SLA · confirmação]
-  RULES --> DB[(SQLite)]
+  RULES --> DB[(SQLite local / Turso no Vercel)]
   CONSOLE[Console de analista] --> API
 ```
 
@@ -90,7 +92,7 @@ O schema versionado em `migrations/001_initial.sql` contém:
 - `conversation_events`: criação, transferência, atualização, reabertura e ações do analista;
 - `schema_migrations`: versão aplicada.
 
-O seed é idempotente e inclui nove perfis, oito artigos, chamados em diferentes estados e uma conversa transferida visível no console. O arquivo padrão é `data/nexo-assist.sqlite`, ignorado pelo Git.
+O seed é idempotente e inclui nove perfis, oito artigos, chamados em diferentes estados e uma conversa transferida visível no console. O arquivo padrão local é `data/nexo-assist.sqlite`, ignorado pelo Git. Na Vercel, Turso/libSQL fornece o banco remoto; as migrations e o seed inicial (quando a tabela `users` está vazia) são aplicados automaticamente na primeira conexão, além de poderem ser executados manualmente com `npm run db:seed`.
 
 ## Estrutura de pastas
 
@@ -112,9 +114,10 @@ tests/                 testes dos fluxos e regras de negócio
 
 ## Requisitos
 
-- Node.js 22.22.0 ou superior e npm.
-- [Ollama](https://ollama.com/download) instalado e em execução. Depois de baixar o modelo, a classificação local não precisa de chave de API nem de conexão com provedor externo.
-- Não é necessário Docker: a demonstração usa SQLite local.
+- Node.js 22.6.0 ou superior e npm.
+- [Ollama](https://ollama.com/download) instalado e em execução para inferência local via Mastra (`qwen3:4b`). Depois de baixar o modelo, a classificação local não precisa de chave de API nem de conexão com provedor externo.
+- Para publicar na Vercel: Turso/libSQL conectado ao projeto (`TURSO_DATABASE_URL` e `TURSO_AUTH_TOKEN`). Sem um endpoint Ollama remoto configurado em `OLLAMA_BASE_URL`, a hospedagem serverless usa automaticamente o roteador determinístico em vez de tentar conectar a `127.0.0.1`.
+- Não é necessário Docker: o desenvolvimento local usa SQLite no arquivo.
 
 ## Instalar e executar
 
@@ -142,9 +145,12 @@ O PRD especifica que a demonstração aceita qualquer senha. Essa autenticação
 | --- | --- | --- |
 | `NEXO_AGENT_MODE` | `mastra` no `.env.example` | `mastra` usa o modelo configurado no Ollama; `local` desativa chamadas ao LLM. |
 | `NEXO_LLM_MODEL` | `ollama/qwen3:4b` | Provider e modelo usados pelo Mastra; o prefixo deve ser `ollama/`. |
-| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434/api` | URL base da API local do Ollama. |
+| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434/api` | URL base da API local do Ollama. Para Ollama Cloud, use `https://ollama.com/api`. |
+| `OLLAMA_API_KEY` | vazio | Opcional localmente; obrigatório para API direta do Ollama Cloud. Enviado no header Bearer, somente no backend. |
 | `SESSION_SECRET` | segredo local de demonstração | Em produção, defina valor aleatório com pelo menos 32 caracteres. |
 | `DB_PATH` | `./data/nexo-assist.sqlite` | Nome relativo dentro de `data/` ou caminho absoluto; `:memory:` é usado nos testes. |
+| `TURSO_DATABASE_URL` | vazio | URL do banco remoto libSQL; quando presente, substitui SQLite local. Obrigatória na Vercel. |
+| `TURSO_AUTH_TOKEN` | vazio | Credencial Turso; obrigatória com `TURSO_DATABASE_URL`. |
 | `APP_TIMEZONE` | `America/Bahia` | Fuso dos horários úteis e da apresentação do SLA. |
 
 `.env.example` contém somente valores de exemplo e é seguro para commit. Nunca publique `.env`, tokens ou chaves reais.
@@ -160,7 +166,7 @@ npm run db:seed   # aplica a migration e carrega os dados sem duplicar
 npm run db:reset  # apaga o arquivo SQLite local e recria a demonstração
 ```
 
-`db:reset` remove o banco configurado em `DB_PATH` (incluindo arquivos WAL/SHM) e repõe o seed. Use-o somente quando quiser restaurar o estado de demonstração.
+`db:reset` remove o banco SQLite local (incluindo arquivos auxiliares) e repõe o seed. Ele se recusa a rodar com `TURSO_DATABASE_URL` configurado para evitar reset remoto acidental. `npm run db:seed` pode inicializar o banco Turso de forma idempotente.
 
 ## Verificações
 
@@ -229,10 +235,34 @@ O checklist de rastreabilidade está em [`docs/requirements-checklist.md`](docs/
 
 ## Limitações conhecidas
 
-- Login e senha são de demonstração, sem diretório corporativo ou senha real.
-- O provedor de chamados é local; não há integração com ServiceNow, Jira Service Management ou outro ITSM.
-- O modelo local exige que o Ollama esteja instalado, ativo e com `qwen3:4b` baixado. Sem ele, mensagens claras seguem pelo roteador local; mensagens ambíguas recebem erro controlado até o serviço voltar.
-- A fila de analistas é uma demonstração local com atualização por polling; não há WebSocket, presença real ou distribuição de carga entre instâncias.
-- Redefinição de senha, privacidade e e-mail de suporte não têm integração de envio externo.
-- A regra de SLA não desconta feriados, pois o requisito não disponibiliza esse calendário.
-- O arquivo SQLite e o segredo de fallback são adequados apenas à demonstração local. Para produção, use autenticação corporativa, segredo forte, banco gerenciado, proteção contra abuso e integrações reais.
+- **Login de demonstração (requisito do PRD):** o PRD determina que qualquer senha não vazia seja aceita nas contas de demonstração. Atende ao desafio, mas não substitui autenticação corporativa; não use esse modo para dados reais.
+- **ITSM simulado (permitido pelo PRD):** não há integração com ServiceNow, Jira Service Management ou outro ITSM. O PRD permite simular esse serviço, e as operações do desafio são executadas e persistidas no banco SQLite/Turso.
+- **Hospedagem do modelo:** localmente, Ollama e `qwen3:4b` rodam na máquina que executa o backend. Na Vercel, caso nenhum endpoint Ollama remoto seja configurado em `OLLAMA_BASE_URL`, a aplicação recua automaticamente para o roteador determinístico (exibindo `Roteador local` na interface) em vez de tentar conectar em `127.0.0.1`; ao configurar um endpoint Ollama remoto acessível, o modo `Mastra · Ollama` assume automaticamente.
+- **Sincronização do console:** a fila de analistas atualiza por polling inteligente (pausado quando a aba está oculta ou há envio em andamento), compartilhando estado entre instâncias via Turso; não há WebSocket ou atribuição automática de carga.
+- **E-mail externo:** redefinição de senha, privacidade e contato de suporte exibem avisos orientativos na própria interface, pois não há provedor SMTP no escopo do desafio.
+- **Calendário de feriados:** o SLA desconta fins de semana e horário fora de 8h–18h, mas não feriados porque o PRD não fornece calendário oficial.
+- **Proteção e escopo do deploy de avaliação:** a publicação conta com banco gerenciado (Turso/libSQL), `SESSION_SECRET` forte obrigatório em produção, validação de origem (`Origin`/`Host`) contra CSRF, cabeçalhos HTTP de segurança e rate limiting nas rotas de mutação/login (`429 Too Many Requests`). Ainda assim, mantém as contas abertas de demonstração exigidas pelo PRD — não insira informações pessoais reais.
+
+## Deploy na Vercel
+
+O modo local não pode ser publicado sem ajustes: as Functions da Vercel não têm filesystem persistente e não conseguem acessar o Ollama em `localhost`. A aplicação usa Turso/libSQL como banco remoto e aceita um endpoint Ollama remoto; no desenvolvimento, SQLite local e Ollama local continuam sendo os padrões.
+
+1. Importe o repositório GitHub na Vercel ou vincule-o com `vercel link`.
+2. Conecte a integração [Turso Cloud](https://vercel.com/marketplace/tursocloud/database) ao projeto. Ela fornece `TURSO_DATABASE_URL` e `TURSO_AUTH_TOKEN`. Confira o plano e a cobrança apresentados no Marketplace antes de habilitar o recurso.
+3. Configure nos ambientes Preview e Production: `SESSION_SECRET` com valor aleatório forte; `NEXO_AGENT_MODE=mastra`; `NEXO_LLM_MODEL=ollama/<modelo-disponível-no-endpoint>`; `OLLAMA_BASE_URL=https://ollama.com/api`; e `OLLAMA_API_KEY` com uma chave do Ollama Cloud. Também pode apontar para outra instalação Ollama compatível e acessível pela Function. Nunca use prefixo `NEXT_PUBLIC_` para esses segredos.
+4. Puxe as variáveis de Preview na máquina de avaliação e rode o seed remoto uma vez:
+
+   ```bash
+   vercel env pull .env.local
+   npm run db:seed
+   ```
+
+   A API do Ollama Cloud requer chave e nome de modelo disponível no endpoint. `qwen3:4b` continua como padrão de desenvolvimento local; escolha o identificador do modelo hospedado em `NEXO_LLM_MODEL` para publicação.
+
+5. Faça o deploy de produção:
+
+   ```bash
+   vercel deploy --prod
+   ```
+
+O endpoint `/api/chat` permite até 60 segundos para a classificação. Não configure `OLLAMA_BASE_URL=http://127.0.0.1:11434/api` na Vercel. O banco e as chaves precisam estar disponíveis também no ambiente Preview se ele for usado para avaliação.

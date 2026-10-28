@@ -2,7 +2,7 @@ import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { createOllama } from "ollama-ai-provider-v2";
 import { z } from "zod";
-import { defaultOllamaBaseUrl, getOllamaModelId } from "./config.ts";
+import { getOllamaBaseUrl, getOllamaModelId } from "./config.ts";
 import type { Intent, IntentDecision } from "./router.ts";
 
 const decisionSchema = z.object({
@@ -11,15 +11,7 @@ const decisionSchema = z.object({
   confidence: z.number().min(0).max(1),
 });
 
-const ollama = createOllama({
-  baseURL: process.env.OLLAMA_BASE_URL ?? defaultOllamaBaseUrl,
-});
-const ollamaModel = ollama.chat(getOllamaModelId());
-
-const routerAgent = new Agent({
-  id: "nexo-intent-router",
-  name: "Nexo Assist — roteador de intenção",
-  instructions: `
+const routerInstructions = `
 Você classifica mensagens para um service desk de TI. Retorne somente os campos do esquema.
 Não responda ao funcionário, não invente artigos nem números e não afirme que uma operação foi executada.
 Escreva o campo reason em uma frase curta com no máximo 12 palavras.
@@ -28,18 +20,41 @@ update para complementar um chamado; create para relatar uma falha ou pedir aces
 handoff somente quando a pessoa pedir explicitamente um analista ou descrever uma interrupção claramente crítica/ampla;
 não transfira automaticamente só porque há uma falha ou porque a categoria é incerta. Use out_of_scope para assuntos fora de TI;
 use unknown quando faltarem detalhes para escolher com segurança. A aplicação valida a decisão e executa todas as operações.
-`,
-  // Mastra adapts AI SDK v4 models at runtime. Its current public type for the
-  // adapter has a conflicting doGenerate return signature, so isolate that
-  // mismatch here instead of weakening the agent or response schema types.
-  model: ollamaModel as unknown as MastraModelConfig,
-});
+`;
+
+let cachedKey = "";
+let cachedAgent: Agent | null = null;
+
+function getRouterAgent(): Agent {
+  const baseURL = getOllamaBaseUrl();
+  const modelId = getOllamaModelId();
+  const apiKey = process.env.OLLAMA_API_KEY?.trim() ?? "";
+  const nextKey = `${baseURL}|${modelId}|${apiKey}`;
+  if (cachedAgent && cachedKey === nextKey) return cachedAgent;
+
+  const ollama = createOllama({
+    baseURL,
+    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+  });
+  const ollamaModel = ollama.chat(modelId);
+  cachedAgent = new Agent({
+    id: "nexo-intent-router",
+    name: "Nexo Assist — roteador de intenção",
+    instructions: routerInstructions,
+    // Mastra adapts AI SDK v4 models at runtime. Its current public type for the
+    // adapter has a conflicting doGenerate return signature, so isolate that
+    // mismatch here instead of weakening the agent or response schema types.
+    model: ollamaModel as unknown as MastraModelConfig,
+  });
+  cachedKey = nextKey;
+  return cachedAgent;
+}
 
 export async function routeWithMastra(text: string, recentMessages: string[]): Promise<Omit<IntentDecision, "mode">> {
   const history = recentMessages.slice(-6).join("\n");
   const timeoutSignal = AbortSignal.timeout(30_000);
   try {
-    const response = await routerAgent.generate(
+    const response = await getRouterAgent().generate(
       `Contexto recente:\n${history || "(sem histórico)"}\n\nMensagem atual:\n${text}`,
       {
         structuredOutput: { schema: decisionSchema },

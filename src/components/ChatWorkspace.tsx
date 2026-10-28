@@ -81,7 +81,7 @@ function clock(value: string): string {
   return new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
-export function ChatWorkspace({ user, agentMode, initial, history }: { user: User; agentMode: string; initial: ChatState; history: Conversation[] }) {
+export function ChatWorkspace({ user, agentMode, agentLabel, initial, history }: { user: User; agentMode: string; agentLabel: string; initial: ChatState; history: Conversation[] }) {
   const [conversation, setConversation] = useState(initial.conversation);
   const [messages, setMessages] = useState(initial.messages);
   const [conversations, setConversations] = useState(history);
@@ -91,6 +91,7 @@ export function ChatWorkspace({ user, agentMode, initial, history }: { user: Use
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const busyRef = useRef(false);
   const paused = conversation.state === "waiting" || conversation.state === "human";
   const count = Math.min(conversation.sessionMessageCount, 30);
 
@@ -100,10 +101,12 @@ export function ChatWorkspace({ user, agentMode, initial, history }: { user: Use
 
   useEffect(() => {
     const interval = window.setInterval(async () => {
+      if (busyRef.current || document.visibilityState === "hidden") return;
       try {
         const response = await fetch(`/api/conversations?id=${conversation.id}`, { cache: "no-store" });
-        if (!response.ok) return;
+        if (!response.ok || busyRef.current) return;
         const result = await response.json() as ChatState;
+        if (busyRef.current) return;
         setConversation(result.conversation);
         setMessages(result.messages);
       } catch { /* A later poll retries a transient connection issue. */ }
@@ -113,7 +116,8 @@ export function ChatWorkspace({ user, agentMode, initial, history }: { user: Use
 
   async function send(value: string) {
     const body = value.trim();
-    if (!body || busy || paused) return;
+    if (!body || busy || busyRef.current || paused) return;
+    busyRef.current = true;
     setBusy(true);
     setError("");
     setInput("");
@@ -132,6 +136,7 @@ export function ChatWorkspace({ user, agentMode, initial, history }: { user: Use
       setInput(body);
       setError(err instanceof Error ? err.message : "Não foi possível enviar a mensagem.");
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
@@ -194,7 +199,7 @@ export function ChatWorkspace({ user, agentMode, initial, history }: { user: Use
       <section className="main-column">
         <header className="app-topbar">
           <div className="breadcrumbs"><span>Service desk de TI</span><b>›</b><strong>Atendimento</strong></div>
-          <div className={`online-pill ${agentMode === "mastra" ? "" : "local-pill"}`}><i />{agentMode === "mastra" ? "Mastra · Ollama local" : "Roteador local"}</div>
+          <div className={`online-pill ${agentMode === "mastra" ? "" : "local-pill"}`}><i />{agentLabel}</div>
         </header>
         <div className="chat-toolbar">
           <div><h1>Atendimento</h1><p>{conversation.state === "agent" ? "Conte o que está acontecendo e acompanhe tudo por aqui." : conversation.state === "closed" ? "Esta conversa foi encerrada." : "Um analista dará continuidade ao atendimento."}</p></div>

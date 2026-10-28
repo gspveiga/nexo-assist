@@ -17,13 +17,13 @@ function daysAgo(days: number): string {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 }
 
-export function seedDemoData(db: SqlDatabase): void {
+export async function seedDemoData(db: SqlDatabase): Promise<void> {
   const insertUser = db.prepare(`
     INSERT OR IGNORE INTO users(id, email, name, department, role, created_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `);
   for (const [id, email, name, department, role] of demoUsers) {
-    insertUser.run(id, email, name, department, role, nowIso());
+    await insertUser.run(id, email, name, department, role, nowIso());
   }
 
   const articles = [
@@ -41,7 +41,7 @@ export function seedDemoData(db: SqlDatabase): void {
     VALUES (?, ?, ?, ?, ?, ?)
   `);
   for (const [id, title, content, category, keywords] of articles) {
-    insertArticle.run(id, title, content, category, JSON.stringify(keywords), nowIso());
+    await insertArticle.run(id, title, content, category, JSON.stringify(keywords), nowIso());
   }
 
   const samples = [
@@ -63,7 +63,7 @@ export function seedDemoData(db: SqlDatabase): void {
     const createdAt = daysAgo(item.age);
     const updatedAt = item.status === "Resolvido" ? createdAt : daysAgo("updateAge" in item ? item.updateAge : Math.min(item.age, 2));
     const dueAt = daysAgo(item.slaAge);
-    insertTicket.run(
+    await insertTicket.run(
       `ticket-${item.number.toLowerCase()}`,
       item.number,
       item.ownerId,
@@ -84,9 +84,9 @@ export function seedDemoData(db: SqlDatabase): void {
 
   const conversationId = "conversation-ana-overdue";
   const conversationTime = nowIso();
-  const overdueTicket = db.prepare("SELECT * FROM tickets WHERE number = 'INC-20311'").get() as Record<string, unknown>;
+  const overdueTicket = await db.prepare("SELECT * FROM tickets WHERE number = 'INC-20311'").get() as Record<string, unknown>;
   const handoffSummary = "Solicitante: Ana Souza (Financeiro).\nChamado relacionado: INC-20311 · Notebook lento após atualização do Windows · Média.\nMotivo: Chamado sem atualização acima do prazo e pedido de atendimento humano.";
-  db.prepare(`
+  await db.prepare(`
     INSERT OR IGNORE INTO conversations(id, user_id, state, active_ticket_id, handoff_reason, handoff_summary, created_at, updated_at, session_message_count)
     VALUES (?, 'user-ana', 'waiting', ?, ?, ?, ?, ?, 7)
   `).run(conversationId, String(overdueTicket.id), "Chamado sem atualização acima do prazo e pedido de atendimento humano.", handoffSummary, daysAgo(0), conversationTime);
@@ -104,10 +104,12 @@ export function seedDemoData(db: SqlDatabase): void {
     INSERT OR IGNORE INTO messages(id, conversation_id, sender_id, sender_role, body, actions_json, decision_json, payload_json, created_at)
     VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?)
   `);
-  messageRows.forEach((row, index) => insertMessage.run(
-    row[0], conversationId, row[1], row[2], row[3], row[4], row[5], new Date(Date.now() - (7 - index) * 60_000).toISOString(),
-  ));
-  db.prepare(`
+  for (const [index, row] of messageRows.entries()) {
+    await insertMessage.run(
+      row[0], conversationId, row[1], row[2], row[3], row[4], row[5], new Date(Date.now() - (7 - index) * 60_000).toISOString(),
+    );
+  }
+  await db.prepare(`
     INSERT OR IGNORE INTO conversation_events(id, conversation_id, actor_id, event_type, details_json, created_at)
     VALUES ('seed-event-ana-handoff', ?, 'user-ana', 'transferred', '{"reason":"Overdue ticket and user request"}', ?)
   `).run(conversationId, conversationTime);

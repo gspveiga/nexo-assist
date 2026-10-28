@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.22.0"
+    "node": ">=22.6.0"
   },
   "scripts": {
     "dev": "next dev",
@@ -20,6 +20,7 @@
     "db:reset": "node --experimental-strip-types scripts/reset-db.ts"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "@mastra/core": "latest",
     "next": "^16.4.3",
     "ollama-ai-provider-v2": "^4.1.0",

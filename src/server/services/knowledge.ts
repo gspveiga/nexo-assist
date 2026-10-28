@@ -7,10 +7,10 @@ export interface KnowledgeMatch {
   score: number;
 }
 
-export function searchKnowledge(db: SqlDatabase, query: string): KnowledgeMatch[] {
+export async function searchKnowledge(db: SqlDatabase, query: string): Promise<KnowledgeMatch[]> {
   const queryWords = tokens(query);
   if (queryWords.size === 0) return [];
-  return listArticles(db)
+  return (await listArticles(db))
     .map((article) => {
       const searchText = `${article.title} ${article.content} ${article.keywords.join(" ")}`;
       const words = tokens(searchText);

@@ -23,7 +23,7 @@ Fonte de requisitos: `Desafio_Tecnico_Nexo_Assist_PRD_v5.pdf` (5 páginas). Os s
 | Mostrar ao funcionário a razão da decisão e ações executadas. | Atendido | `DecisionTrace` persistida e detalhe expansível acima das respostas. |
 | Console de analista com fila de transferências, assumir, responder, devolver e encerrar. | Atendido | `src/server/services/console.ts`, endpoints `/api/console/*`, `ConsoleWorkspace.tsx`; testes de API e serviço. |
 | Transferência inclui resumo e pausa o agente até o analista devolver/encerrar. | Atendido | `handoffSummary`, estados `waiting`/`human`/`closed`, validação `AGENT_PAUSED`. |
-| Persistir usuários, chamados, FAQ, conversas, mensagens e eventos. | Atendido | SQLite e migration `001_initial.sql`; teste fecha/reabre arquivo. |
+| Persistir usuários, chamados, FAQ, conversas, mensagens e eventos. | Atendido | SQLite local e libSQL/Turso em produção (`migrations/001_initial.sql`); teste fecha/reabre arquivo. |
 | Seeds suficientes e repetíveis para demonstração. | Atendido | `seedDemoData` idempotente; oito artigos, nove perfis, chamados diversos e conversa na fila. |
 | TypeScript estrito, documentação, `.env.example` e execução local simples. | Atendido | `tsconfig.json`, README, `.env.example`, scripts npm. |
 | Interface de login, atendimento, perfil e consola próxima aos protótipos. | Atendido com validação HTTP | Telas React/CSS e teste HTTP de HTML e rotas. A inspeção visual em navegador não foi automatizada neste ambiente. |
@@ -33,7 +33,7 @@ Fonte de requisitos: `Desafio_Tecnico_Nexo_Assist_PRD_v5.pdf` (5 páginas). Os s
 | Critério/diferencial | Status | Evidência |
 | --- | --- | --- |
 | Máscara clara entre roteamento do agente e regras de negócio. | Atendido | Classificador local ou Mastra seleciona intenção; serviços do backend validam e executam. |
-| Aplicação publicada em ambiente externo. | Não incluído | O PRD marca deployment como diferencial; o projeto está preparado para GitHub, sem hospedagem configurada. |
+| Aplicação publicada em ambiente externo. | Atendido | Deploy de produção publicado em [https://nexo-assist-tau.vercel.app](https://nexo-assist-tau.vercel.app) com persistência gerenciada via Turso (libSQL), `SESSION_SECRET` forte, cabeçalhos de segurança, verificação de origem e rate limiting. |
 | Qualidade visual e estados de carregamento, erro, ausência de dados e pausa. | Atendido no código | Telas e CSS incluem os estados; não foi feita captura visual com browser neste ambiente. |
 | Casos principais e erros com teste automatizado. | Atendido | `tests/workflows.test.ts` e `tests/http-smoke.mjs`. |
 

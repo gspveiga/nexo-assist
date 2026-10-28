@@ -8,19 +8,22 @@ export function LoginScreen() {
   const router = useRouter();
   const [email, setEmail] = useState("ana.souza@nexo.com.br");
   const [password, setPassword] = useState("nexo2026");
+  const [remember, setRemember] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, remember }),
       });
       const result = await response.json() as { error?: string; redirectTo?: string };
       if (!response.ok) throw new Error(result.error || "Não foi possível entrar.");
@@ -62,16 +65,21 @@ export function LoginScreen() {
           <form onSubmit={submit}>
             <label htmlFor="email">E-mail corporativo</label>
             <div className="input-wrap"><span aria-hidden="true">✉</span><input id="email" type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required /></div>
-            <div className="label-row"><label htmlFor="password">Senha</label><a href="mailto:service-desk@nexo.com.br?subject=Redefini%C3%A7%C3%A3o%20de%20senha">Esqueci minha senha</a></div>
+            <div className="label-row"><label htmlFor="password">Senha</label><button type="button" className="text-link-button" onClick={() => setNotice("Na demonstração, qualquer senha não vazia acessa as contas de avaliação. Na Nexo, a redefinição de senha ocorre no portal de identidade ou pelo ramal 4000 (sem envio de e-mail externo neste ambiente).")}>Esqueci minha senha</button></div>
             <div className="input-wrap password-wrap"><span aria-hidden="true">♙</span><input id="password" type={showPassword ? "text" : "password"} autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /><button type="button" aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"} onClick={() => setShowPassword((value) => !value)}>◎</button></div>
-            <label className="remember-row"><input type="checkbox" defaultChecked /> <span>Manter conectado neste computador</span></label>
+            <label className="remember-row"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} /> <span>Manter conectado neste computador</span></label>
             {error && <p className="form-error" role="alert">{error}</p>}
+            {notice && <p className="login-notice" role="status">{notice}</p>}
             <button className="primary-button login-submit" type="submit" disabled={busy}>{busy ? "Entrando…" : <>Entrar <span aria-hidden="true">→</span></>}</button>
           </form>
           <div className="login-divider" />
-          <p className="demo-hint">Demonstração: Ana Souza · ana.souza@nexo.com.br</p>
+          <div className="demo-hint">
+            <span>Demonstração:</span>
+            <button type="button" className="demo-account-pill" onClick={() => { setEmail("ana.souza@nexo.com.br"); setPassword("nexo2026"); setError(""); }}>Funcionária · ana.souza@nexo.com.br</button>
+            <button type="button" className="demo-account-pill" onClick={() => { setEmail("rafael.lima@nexo.com.br"); setPassword("nexo2026"); setError(""); }}>Analista · rafael.lima@nexo.com.br</button>
+          </div>
         </div>
-        <footer className="login-footer"><span>© 2026 Nexo · Service desk de TI</span><a href="mailto:service-desk@nexo.com.br?subject=Privacidade">Privacidade e uso de dados</a></footer>
+        <footer className="login-footer"><span>© 2026 Nexo · Service desk de TI</span><button type="button" className="text-link-button footer-link-button" onClick={() => setNotice("Ambiente de avaliação técnica: chamados e conversas são isolados por titular autenticado com cookie assinado. Não insira dados pessoais ou credenciais reais.")}>Privacidade e uso de dados</button></footer>
       </section>
     </main>
   );

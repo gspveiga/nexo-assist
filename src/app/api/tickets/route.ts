@@ -5,7 +5,7 @@ import { getDatabase, listTickets } from "@/server/db/database.ts";
 export async function GET(): Promise<Response> {
   try {
     const user = await requireUser("employee");
-    return Response.json({ tickets: listTickets(getDatabase(), user.id) });
+    return Response.json({ tickets: await listTickets(await getDatabase(), user.id) });
   } catch (error) {
     return errorResponse(error);
   }

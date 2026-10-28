@@ -21,30 +21,32 @@ import { routeMessage } from "../src/server/agent/router.ts";
 import { closeConversation, getConsoleQueue, returnConversationToAgent, sendAnalystMessage, takeConversation } from "../src/server/services/console.ts";
 import { ServiceError } from "../src/server/services/errors.ts";
 import { createSessionToken, verifySessionToken } from "../src/server/auth/session.ts";
+import { assertSameOrigin } from "../src/server/api.ts";
+import { assertRateLimit, resetRateLimits } from "../src/server/rate-limit.ts";
 import { calculateSlaDueAt, isOverdue } from "../src/server/services/sla.ts";
 import { inferPriority } from "../src/server/services/classification.ts";
 
 interface Fixture {
   db: SqlDatabase;
-  ana: NonNullable<ReturnType<typeof findUserByEmail>>;
-  bruno: NonNullable<ReturnType<typeof findUserByEmail>>;
-  analyst: NonNullable<ReturnType<typeof findUserByEmail>>;
+  ana: NonNullable<Awaited<ReturnType<typeof findUserByEmail>>>;
+  bruno: NonNullable<Awaited<ReturnType<typeof findUserByEmail>>>;
+  analyst: NonNullable<Awaited<ReturnType<typeof findUserByEmail>>>;
   conversationId: string;
-  close: () => void;
+  close: () => Promise<void>;
 }
 
-function fixture(): Fixture {
-  const db = createDatabase(":memory:");
-  seedDemoData(db);
-  const ana = findUserByEmail(db, "ana.souza@nexo.com.br")!;
-  const bruno = findUserByEmail(db, "bruno.tavares@nexo.com.br")!;
-  const analyst = findUserByEmail(db, "rafael.lima@nexo.com.br")!;
-  const conversation = createConversation(db, ana.id);
-  return { db, ana, bruno, analyst, conversationId: conversation.id, close: () => db.close() };
+async function fixture(): Promise<Fixture> {
+  const db = await createDatabase(":memory:");
+  await seedDemoData(db);
+  const ana = (await findUserByEmail(db, "ana.souza@nexo.com.br"))!;
+  const bruno = (await findUserByEmail(db, "bruno.tavares@nexo.com.br"))!;
+  const analyst = (await findUserByEmail(db, "rafael.lima@nexo.com.br"))!;
+  const conversation = await createConversation(db, ana.id);
+  return { db, ana, bruno, analyst, conversationId: conversation.id, close: async () => { await db.close(); } };
 }
 
 test("FAQ returns an answer grounded in a seeded article", async (t) => {
-  const f = fixture();
+  const f = await fixture();
   t.after(f.close);
   const result = await processUserMessage(f.db, f.ana, f.conversationId, "Como redefino a senha da rede Nexo?");
   const answer = result.messages.at(-1)!;
@@ -54,7 +56,7 @@ test("FAQ returns an answer grounded in a seeded article", async (t) => {
 });
 
 test("ticket lookup lists only the signed-in employee's tickets", async (t) => {
-  const f = fixture();
+  const f = await fixture();
   t.after(f.close);
   const result = await processUserMessage(f.db, f.ana, f.conversationId, "Qual o status do meu chamado?");
   const answer = result.messages.at(-1)!;
@@ -68,7 +70,7 @@ test("ticket lookup lists only the signed-in employee's tickets", async (t) => {
 });
 
 test("Mastra with Ollama routes clear ticket-status requests without waiting for the LLM", async (t) => {
-  const f = fixture();
+  const f = await fixture();
   const previousMode = process.env.NEXO_AGENT_MODE;
   const previousModel = process.env.NEXO_LLM_MODEL;
   t.after(() => {
@@ -91,12 +93,12 @@ test("Mastra with Ollama routes clear ticket-status requests without waiting for
   assert.equal(decision.intent, "lookup");
 });
 
-test("employee can delete their inactive conversation but not another user's or a live handoff", (t) => {
-  const f = fixture();
+test("employee can delete their inactive conversation but not another user's or a live handoff", async (t) => {
+  const f = await fixture();
   t.after(f.close);
-  const ticketsBefore = listTickets(f.db, f.ana.id).length;
-  const ownConversation = createConversation(f.db, f.ana.id);
-  addMessage(f.db, {
+  const ticketsBefore = (await listTickets(f.db, f.ana.id)).length;
+  const ownConversation = await createConversation(f.db, f.ana.id);
+  await addMessage(f.db, {
     conversationId: ownConversation.id,
     senderId: f.ana.id,
     senderRole: "employee",
@@ -105,71 +107,71 @@ test("employee can delete their inactive conversation but not another user's or 
     decision: null,
   });
 
-  deleteConversationForUser(f.db, ownConversation.id, f.ana);
+  await deleteConversationForUser(f.db, ownConversation.id, f.ana);
 
-  assert.equal(findConversationById(f.db, ownConversation.id), null);
-  assert.deepEqual(listMessages(f.db, ownConversation.id), []);
-  assert.equal(listTickets(f.db, f.ana.id).length, ticketsBefore);
+  assert.equal(await findConversationById(f.db, ownConversation.id), null);
+  assert.deepEqual(await listMessages(f.db, ownConversation.id), []);
+  assert.equal((await listTickets(f.db, f.ana.id)).length, ticketsBefore);
 
-  const otherConversation = createConversation(f.db, f.bruno.id);
-  assert.throws(
-    () => deleteConversationForUser(f.db, otherConversation.id, f.ana),
+  const otherConversation = await createConversation(f.db, f.bruno.id);
+  await assert.rejects(
+    deleteConversationForUser(f.db, otherConversation.id, f.ana),
     (error: unknown) => error instanceof ServiceError && error.code === "CONVERSATION_NOT_FOUND",
   );
 
-  const liveHandoff = createConversation(f.db, f.ana.id);
-  updateConversation(f.db, liveHandoff.id, { state: "waiting" });
-  assert.throws(
-    () => deleteConversationForUser(f.db, liveHandoff.id, f.ana),
+  const liveHandoff = await createConversation(f.db, f.ana.id);
+  await updateConversation(f.db, liveHandoff.id, { state: "waiting" });
+  await assert.rejects(
+    deleteConversationForUser(f.db, liveHandoff.id, f.ana),
     (error: unknown) => error instanceof ServiceError && error.code === "CONVERSATION_ACTIVE",
   );
-  assert.equal(findConversationById(f.db, liveHandoff.id)?.state, "waiting");
+  assert.equal((await findConversationById(f.db, liveHandoff.id))?.state, "waiting");
 });
 
 test("valid update is staged, confirmed, persisted, and invalid ownership is rejected", async (t) => {
-  const f = fixture();
+  const f = await fixture();
   t.after(f.close);
-  const before = findTicketByNumber(f.db, f.ana.id, "INC-20311")!;
+  const before = (await findTicketByNumber(f.db, f.ana.id, "INC-20311"))!;
   const staged = await processUserMessage(f.db, f.ana, f.conversationId, "Quero complementar INC-20311: o reinício não resolveu e agora ocorre erro ao abrir o relatório.");
   assert.equal(staged.conversation.draft?.operation, "update");
   assert.match(staged.messages.at(-1)!.body, /Confira o rascunho/);
-  assert.equal(findTicketByNumber(f.db, f.ana.id, "INC-20311")?.description, before.description);
+  assert.equal((await findTicketByNumber(f.db, f.ana.id, "INC-20311"))?.description, before.description);
 
   const saved = await processUserMessage(f.db, f.ana, f.conversationId, "confirmar");
   assert.match(saved.messages.at(-1)!.body, /Atualizei o chamado INC-20311/);
-  assert.match(findTicketByNumber(f.db, f.ana.id, "INC-20311")!.description, /erro ao abrir o relatório/);
+  assert.match((await findTicketByNumber(f.db, f.ana.id, "INC-20311"))!.description, /erro ao abrir o relatório/);
 
-  const otherConversation = createConversation(f.db, f.ana.id);
+  const otherConversation = await createConversation(f.db, f.ana.id);
   const rejected = await processUserMessage(f.db, f.ana, otherConversation.id, "Quero complementar INC-20460: o Wi-Fi continua fora do ar.");
   assert.match(rejected.messages.at(-1)!.body, /não encontrei esse chamado/i);
-  assert.equal(findTicketByNumber(f.db, f.bruno.id, "INC-20460")?.description, "Equipe comercial sem conexão Wi-Fi no andar 4.");
+  assert.equal((await findTicketByNumber(f.db, f.bruno.id, "INC-20460"))?.description, "Equipe comercial sem conexão Wi-Fi no andar 4.");
 });
 
 test("an open duplicate is updated instead of creating a second ticket", async (t) => {
-  const f = fixture();
+  const f = await fixture();
   t.after(f.close);
-  const beforeCount = listTickets(f.db, f.ana.id).length;
+  const beforeCount = (await listTickets(f.db, f.ana.id)).length;
   const staged = await processUserMessage(f.db, f.ana, f.conversationId, "Meu notebook continua lento após atualização do Windows, mesmo depois de reiniciar.");
   assert.equal(staged.conversation.draft?.operation, "update");
   assert.equal(staged.conversation.draft?.ticketNumber, "INC-20311");
   assert.match(staged.messages.at(-1)!.body, /evitar duplicidade/i);
   await processUserMessage(f.db, f.ana, f.conversationId, "confirmar");
-  assert.equal(listTickets(f.db, f.ana.id).length, beforeCount);
-  assert.match(findTicketByNumber(f.db, f.ana.id, "INC-20311")!.description, /mesmo depois de reiniciar/i);
+  assert.equal((await listTickets(f.db, f.ana.id)).length, beforeCount);
+  assert.match((await findTicketByNumber(f.db, f.ana.id, "INC-20311"))!.description, /mesmo depois de reiniciar/i);
 });
 
 test("a recently resolved matching ticket can be reopened within seven days", async (t) => {
-  const f = fixture();
+  const f = await fixture();
   t.after(f.close);
   const staged = await processUserMessage(f.db, f.ana, f.conversationId, "A senha do SAP está bloqueada novamente.");
   assert.equal(staged.conversation.draft?.operation, "reopen");
   assert.equal(staged.conversation.draft?.ticketNumber, "INC-20150");
   await processUserMessage(f.db, f.ana, f.conversationId, "confirmar");
-  assert.equal(findTicketByNumber(f.db, f.ana.id, "INC-20150")?.status, "Reaberto");
+  assert.equal((await findTicketByNumber(f.db, f.ana.id, "INC-20150"))?.status, "Reaberto");
 });
 
 test("a resolved ticket outside the seven-day window cannot be updated", async (t) => {
-  const f = fixture();
+  const f = await fixture();
   t.after(f.close);
   const result = await processUserMessage(f.db, f.ana, f.conversationId, "Quero complementar INC-19877: continua sem sincronizar.");
   assert.match(result.messages.at(-1)!.body, /mais de 7 dias/i);
@@ -177,7 +179,7 @@ test("a resolved ticket outside the seven-day window cannot be updated", async (
 });
 
 test("ticket opening collects a concrete description and impact, then creates only after confirmation", async (t) => {
-  const f = fixture();
+  const f = await fixture();
   t.after(f.close);
   const start = await processUserMessage(f.db, f.ana, f.conversationId, "Preciso abrir um chamado");
   assert.equal(start.conversation.draft?.awaitingDescription, true);
@@ -188,7 +190,7 @@ test("ticket opening collects a concrete description and impact, then creates on
   assert.equal(details.conversation.draft?.priority, "Alta");
   assert.equal(details.conversation.draft?.affectedScope, "Só você");
   assert.match(details.messages.at(-1)!.body, /Confira o rascunho/);
-  assert.equal(listTickets(f.db, f.ana.id).filter((ticket) => ticket.number.startsWith("INC-205")).length, 0);
+  assert.equal((await listTickets(f.db, f.ana.id)).filter((ticket) => ticket.number.startsWith("INC-205")).length, 0);
 
   const saved = await processUserMessage(f.db, f.ana, f.conversationId, "confirmar");
   const newTicket = saved.messages.at(-1)!.payload?.ticket;
@@ -201,12 +203,12 @@ test("ticket opening collects a concrete description and impact, then creates on
 });
 
 test("editing a new-ticket draft replaces its description and recalculates its classification", async (t) => {
-  const f = fixture();
+  const f = await fixture();
   t.after(f.close);
   const first = await processUserMessage(f.db, f.ana, f.conversationId, "Meu notebook não conecta na VPN e mostra erro 809 no Windows 11.");
   assert.equal(first.conversation.draft?.operation, "create");
   await processUserMessage(f.db, f.ana, f.conversationId, "editar");
-  assert.equal(findConversationById(f.db, f.conversationId)?.draft?.awaitingEdit, true);
+  assert.equal((await findConversationById(f.db, f.conversationId))?.draft?.awaitingEdit, true);
   const corrected = await processUserMessage(f.db, f.ana, f.conversationId, "Meu notebook não conecta na VPN e mostra erro 809 no Windows 10. Tenho reunião com cliente hoje.");
   assert.match(corrected.conversation.draft?.description ?? "", /Windows 10/);
   assert.doesNotMatch(corrected.conversation.draft?.description ?? "", /Windows 11/);
@@ -214,7 +216,7 @@ test("editing a new-ticket draft replaces its description and recalculates its c
 });
 
 test("human request transfers the conversation and pauses the agent", async (t) => {
-  const f = fixture();
+  const f = await fixture();
   t.after(f.close);
   const result = await processUserMessage(f.db, f.ana, f.conversationId, "Quero falar com um analista sobre o INC-20311");
   assert.equal(result.conversation.state, "waiting");
@@ -226,7 +228,7 @@ test("human request transfers the conversation and pauses the agent", async (t) 
 });
 
 test("invalid messages and tool failures return controlled errors", async (t) => {
-  const f = fixture();
+  const f = await fixture();
   t.after(f.close);
   await assert.rejects(processUserMessage(f.db, f.ana, f.conversationId, "   "), (error: unknown) => error instanceof ServiceError && error.code === "MESSAGE_EMPTY");
   await assert.rejects(processUserMessage(f.db, f.ana, f.conversationId, "x".repeat(2001)), (error: unknown) => error instanceof ServiceError && error.code === "MESSAGE_TOO_LONG");
@@ -253,65 +255,65 @@ test("invalid messages and tool failures return controlled errors", async (t) =>
   assert.equal(failed.messages.at(-1)!.decision?.outcome, "error");
 });
 
-test("demo seed is idempotent and contains the required evaluation fixtures", (t) => {
-  const db = createDatabase(":memory:");
-  t.after(() => db.close());
-  seedDemoData(db);
-  const before = db.prepare("SELECT (SELECT count(*) FROM users) AS users, (SELECT count(*) FROM tickets) AS tickets, (SELECT count(*) FROM knowledge_articles) AS articles, (SELECT count(*) FROM messages) AS messages").get() as Record<string, number>;
+test("demo seed is idempotent and contains the required evaluation fixtures", async (t) => {
+  const db = await createDatabase(":memory:");
+  t.after(async () => { await db.close(); });
+  await seedDemoData(db);
+  const before = await db.prepare("SELECT (SELECT count(*) FROM users) AS users, (SELECT count(*) FROM tickets) AS tickets, (SELECT count(*) FROM knowledge_articles) AS articles, (SELECT count(*) FROM messages) AS messages").get() as Record<string, number>;
   assert.equal(before.users, 9);
   assert.equal(before.tickets, 8);
   assert.equal(before.articles, 8);
   assert.equal(before.messages, 7);
-  seedDemoData(db);
-  const after = db.prepare("SELECT (SELECT count(*) FROM users) AS users, (SELECT count(*) FROM tickets) AS tickets, (SELECT count(*) FROM knowledge_articles) AS articles, (SELECT count(*) FROM messages) AS messages").get() as Record<string, number>;
+  await seedDemoData(db);
+  const after = await db.prepare("SELECT (SELECT count(*) FROM users) AS users, (SELECT count(*) FROM tickets) AS tickets, (SELECT count(*) FROM knowledge_articles) AS articles, (SELECT count(*) FROM messages) AS messages").get() as Record<string, number>;
   assert.deepEqual(after, before);
 });
 
-test("conversation and messages survive closing and reopening SQLite", (t) => {
+test("conversation and messages survive closing and reopening SQLite", async (t) => {
   const folder = mkdtempSync(join(tmpdir(), "nexo-assist-test-"));
   const location = join(folder, "demo.sqlite");
-  const first = createDatabase(location);
-  seedDemoData(first);
-  const ana = findUserByEmail(first, "ana.souza@nexo.com.br")!;
-  const conversation = createConversation(first, ana.id);
+  const first = await createDatabase(location);
+  await seedDemoData(first);
+  const ana = (await findUserByEmail(first, "ana.souza@nexo.com.br"))!;
+  const conversation = await createConversation(first, ana.id);
   const id = conversation.id;
-  first.prepare(`INSERT INTO messages(id, conversation_id, sender_id, sender_role, body, created_at) VALUES ('persist-test', ?, ?, 'employee', 'persistir mensagem', ?)`).run(id, ana.id, new Date().toISOString());
-  first.close();
+  await first.prepare(`INSERT INTO messages(id, conversation_id, sender_id, sender_role, body, created_at) VALUES ('persist-test', ?, ?, 'employee', 'persistir mensagem', ?)`).run(id, ana.id, new Date().toISOString());
+  await first.close();
 
-  const second = createDatabase(location);
-  t.after(() => { second.close(); rmSync(folder, { recursive: true, force: true }); });
-  const recovered = findConversationById(second, id);
+  const second = await createDatabase(location);
+  t.after(async () => { await second.close(); rmSync(folder, { recursive: true, force: true }); });
+  const recovered = await findConversationById(second, id);
   assert.equal(recovered?.userId, ana.id);
-  const stored = second.prepare("SELECT body FROM messages WHERE id = 'persist-test'").get() as { body: string };
+  const stored = await second.prepare("SELECT body FROM messages WHERE id = 'persist-test'").get() as { body: string };
   assert.equal(stored.body, "persistir mensagem");
 });
 
-test("analyst can take, reply, and return a transferred conversation", (t) => {
-  const f = fixture();
+test("analyst can take, reply, and return a transferred conversation", async (t) => {
+  const f = await fixture();
   t.after(f.close);
-  const item = getConsoleQueue(f.db, f.analyst).find((entry) => entry.conversation.id === "conversation-ana-overdue");
+  const item = (await getConsoleQueue(f.db, f.analyst)).find((entry) => entry.conversation.id === "conversation-ana-overdue");
   assert.ok(item);
-  const taken = takeConversation(f.db, f.analyst, item.conversation.id);
+  const taken = await takeConversation(f.db, f.analyst, item.conversation.id);
   assert.equal(taken.state, "human");
   assert.equal(taken.assignedAnalystId, f.analyst.id);
-  const message = sendAnalystMessage(f.db, f.analyst, item.conversation.id, "Oi, Ana. Vou verificar o notebook remotamente.");
+  const message = await sendAnalystMessage(f.db, f.analyst, item.conversation.id, "Oi, Ana. Vou verificar o notebook remotamente.");
   assert.equal(message.senderRole, "analyst");
-  const returned = returnConversationToAgent(f.db, f.analyst, item.conversation.id);
+  const returned = await returnConversationToAgent(f.db, f.analyst, item.conversation.id);
   assert.equal(returned.state, "agent");
   assert.equal(returned.assignedAnalystId, null);
 });
 
-test("only the assigned analyst can close a conversation", (t) => {
-  const f = fixture();
+test("only the assigned analyst can close a conversation", async (t) => {
+  const f = await fixture();
   t.after(f.close);
-  takeConversation(f.db, f.analyst, "conversation-ana-overdue");
-  const closed = closeConversation(f.db, f.analyst, "conversation-ana-overdue");
+  await takeConversation(f.db, f.analyst, "conversation-ana-overdue");
+  const closed = await closeConversation(f.db, f.analyst, "conversation-ana-overdue");
   assert.equal(closed.state, "closed");
-  assert.throws(() => closeConversation(f.db, f.analyst, "conversation-ana-overdue"), ServiceError);
+  await assert.rejects(closeConversation(f.db, f.analyst, "conversation-ana-overdue"), ServiceError);
 });
 
-test("session token is signed, expires, and carries only the authenticated identity", (t) => {
-  const f = fixture();
+test("session token is signed, expires, and carries only the authenticated identity", async (t) => {
+  const f = await fixture();
   t.after(f.close);
   const now = Date.now();
   const token = createSessionToken(f.ana, now);
@@ -332,4 +334,30 @@ test("priority rules and SLA deadlines follow the documented business schedule",
   const criticalDueAt = new Date(calculateSlaDueAt("Crítica", fridayAtFourPm));
   assert.equal(criticalDueAt.getTime() - fridayAtFourPm.getTime(), 60 * 60_000);
   assert.equal(isOverdue(new Date(fridayAtFourPm.getTime() - 1).toISOString(), fridayAtFourPm), true);
+});
+
+test("rate limiter and origin guard block abusive or cross-origin requests", () => {
+  resetRateLimits();
+  assertRateLimit("login", "203.0.113.10", 2, 60_000, 1_000);
+  assertRateLimit("login", "203.0.113.10", 2, 60_000, 1_500);
+  assert.throws(
+    () => assertRateLimit("login", "203.0.113.10", 2, 60_000, 2_000),
+    (error: unknown) => error instanceof ServiceError && error.statusCode === 429 && error.code === "RATE_LIMITED",
+  );
+  assertRateLimit("login", "203.0.113.10", 2, 60_000, 62_000);
+
+  const sameOrigin = new Request("https://nexo-assist.vercel.app/api/chat", {
+    method: "POST",
+    headers: { host: "nexo-assist.vercel.app", origin: "https://nexo-assist.vercel.app" },
+  });
+  assert.doesNotThrow(() => assertSameOrigin(sameOrigin));
+
+  const crossOrigin = new Request("https://nexo-assist.vercel.app/api/chat", {
+    method: "POST",
+    headers: { host: "nexo-assist.vercel.app", origin: "https://evil.example.com" },
+  });
+  assert.throws(
+    () => assertSameOrigin(crossOrigin),
+    (error: unknown) => error instanceof ServiceError && error.statusCode === 403 && error.code === "CSRF_ORIGIN_MISMATCH",
+  );
 });
