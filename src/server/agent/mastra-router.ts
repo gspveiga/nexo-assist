@@ -1,5 +1,6 @@
 import { Agent } from "@mastra/core/agent";
 import { z } from "zod";
+import { defaultLlmModel } from "./config.ts";
 import type { Intent, IntentDecision } from "./router.ts";
 
 const decisionSchema = z.object({
@@ -21,7 +22,7 @@ update para complementar um chamado; create para relatar uma falha ou pedir aces
 handoff quando a pessoa pede analista ou descreve uma falha geral/crítica; out_of_scope para assuntos fora de TI;
 unknown quando não houver informação suficiente. A aplicação valida a decisão e executa todas as operações.
 `,
-  model: process.env.NEXO_LLM_MODEL ?? "openai/gpt-6.1-sol",
+  model: process.env.NEXO_LLM_MODEL ?? defaultLlmModel,
 });
 
 export async function routeWithMastra(text: string, recentMessages: string[]): Promise<Omit<IntentDecision, "mode">> {

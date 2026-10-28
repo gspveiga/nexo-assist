@@ -1,4 +1,5 @@
 import type { ConversationState, Ticket, TicketDraft } from "@/shared/types";
+import { getAgentMode } from "./config.ts";
 import { searchKnowledge } from "../services/knowledge.ts";
 import type { SqlDatabase } from "../db/database.ts";
 
@@ -70,11 +71,11 @@ export async function routeMessage(
   context: { state: ConversationState; draft: TicketDraft | null; recentMessages: string[] },
 ): Promise<IntentDecision> {
   if (context.state !== "agent" || context.draft) return localRoute(text, db);
-  if (process.env.NEXO_AGENT_MODE !== "mastra" || !process.env.OPENAI_API_KEY) return localRoute(text, db);
+  if (getAgentMode() !== "mastra") return localRoute(text, db);
   try {
     const { routeWithMastra } = await import("./mastra-router.ts");
     const decision = await routeWithMastra(text, context.recentMessages);
-    if (decision.confidence < 0.55) return localRoute(text, db);
+    if (decision.confidence < 0.55) return { ...localRoute(text, db), reason: "A confiança do LLM foi baixa; usei o roteador local conservador." };
     return { ...decision, mode: "mastra" };
   } catch (error) {
     console.error("Mastra não respondeu:", error instanceof Error ? error.message : error);
