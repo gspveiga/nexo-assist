@@ -67,19 +67,19 @@ test("ticket lookup lists only the signed-in employee's tickets", async (t) => {
   assert.equal(privateResult.messages.at(-1)!.decision?.outcome, "blocked");
 });
 
-test("Mastra mode routes clear ticket-status requests without waiting for the LLM", async (t) => {
+test("Mastra with Ollama routes clear ticket-status requests without waiting for the LLM", async (t) => {
   const f = fixture();
   const previousMode = process.env.NEXO_AGENT_MODE;
-  const previousKey = process.env.OPENAI_API_KEY;
+  const previousModel = process.env.NEXO_LLM_MODEL;
   t.after(() => {
     f.close();
     if (previousMode === undefined) delete process.env.NEXO_AGENT_MODE;
     else process.env.NEXO_AGENT_MODE = previousMode;
-    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = previousKey;
+    if (previousModel === undefined) delete process.env.NEXO_LLM_MODEL;
+    else process.env.NEXO_LLM_MODEL = previousModel;
   });
   process.env.NEXO_AGENT_MODE = "mastra";
-  process.env.OPENAI_API_KEY = "test-key";
+  process.env.NEXO_LLM_MODEL = "ollama/qwen3:4b";
 
   const decision = await routeMessage("Qual o status do meu chamado?", f.db, {
     state: "agent",

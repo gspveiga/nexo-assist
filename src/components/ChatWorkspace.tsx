@@ -194,7 +194,7 @@ export function ChatWorkspace({ user, agentMode, initial, history }: { user: Use
       <section className="main-column">
         <header className="app-topbar">
           <div className="breadcrumbs"><span>Service desk de TI</span><b>›</b><strong>Atendimento</strong></div>
-          <div className={`online-pill ${agentMode === "mastra" ? "" : "local-pill"}`}><i />{agentMode === "mastra" ? "Assistente online" : "Assistente local online"}</div>
+          <div className={`online-pill ${agentMode === "mastra" ? "" : "local-pill"}`}><i />{agentMode === "mastra" ? "Mastra · Ollama local" : "Roteador local"}</div>
         </header>
         <div className="chat-toolbar">
           <div><h1>Atendimento</h1><p>{conversation.state === "agent" ? "Conte o que está acontecendo e acompanhe tudo por aqui." : conversation.state === "closed" ? "Esta conversa foi encerrada." : "Um analista dará continuidade ao atendimento."}</p></div>

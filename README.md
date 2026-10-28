@@ -20,16 +20,16 @@ Agente de atendimento de TI para a empresa fictícia Nexo. O funcionário conver
 - **Next.js 16 / React 19** para interface e Route Handlers HTTP.
 - **TypeScript estrito** nos componentes, contratos e serviços.
 - **SQLite (`node:sqlite`)** para usuários, conversas, mensagens, chamados, eventos e FAQ; sem serviço externo para a demonstração.
-- **Mastra + OpenAI GPT-6.1 Sol** para classificar mensagens ambíguas com saída estruturada quando há chave de API. Sem credencial, o roteador determinístico local mantém a demonstração funcional e rápida.
+- **Mastra + Ollama + Qwen3 4B** para classificar mensagens ambíguas localmente com saída estruturada. Não exige chave de API; as intenções claras continuam no roteador determinístico para responder sem esperar o modelo.
 - **Node.js 22.22 ou superior**. `node:sqlite` e o strip de tipos do Node ainda são recursos experimentais nessa versão; o projeto não usa banco em memória na execução normal.
 
 ### Motivo da escolha do modelo e do framework
 
-O **GPT-6.1 Sol** foi escolhido para classificar mensagens que o roteador local não reconhece com segurança. O modelo retorna uma decisão estruturada; o Mastra integra a chamada ao agente TypeScript e um schema Zod valida os campos. O backend continua responsável por autorização e operações, sem deixar o modelo alterar dados diretamente. Consulte a [documentação do GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol) e a [documentação do Mastra](https://mastra.ai/docs).
+O **Qwen3 4B** foi escolhido para classificar mensagens que o roteador local não reconhece com segurança, priorizando menor tempo de resposta no Mac Apple Silicon com 16 GB. A variante quantizada publicada no Ollama ocupa cerca de 2,5 GB. O modelo roda pelo Ollama no próprio computador, sem custo por chamada, chave de provedor ou envio do conteúdo da conversa a uma API externa. O Mastra integra o modelo ao agente TypeScript; o schema Zod valida a decisão estruturada. O backend continua responsável por autorização e operações, sem deixar o modelo alterar dados diretamente. O provider Ollama usado pelo Mastra é `ollama-ai-provider-v2`; consulte o [modelo Qwen3 4B no Ollama](https://ollama.com/library/qwen3:4b), a [documentação do provider Ollama no Mastra](https://mastra.ai/models/providers/ollama), a [documentação do Ollama no AI SDK](https://ai-sdk.dev/providers/community-providers/ollama) e a [documentação do Mastra](https://mastra.ai/docs).
 
-O Next.js roda localmente, mas o modelo GPT **não** roda no computador: quando `OPENAI_API_KEY` está configurada e `NEXO_AGENT_MODE=mastra`, a classificação é enviada à API da OpenAI e depende de internet e da cota da conta. Sem a chave, a aplicação usa o roteador determinístico local, sem chamar um LLM. Solicitações claras também passam pelo roteador local para evitar latência desnecessária; mensagens ambíguas usam Mastra/GPT. Chamadas ao provedor têm limite de 15 segundos.
+Com `NEXO_AGENT_MODE=mastra`, mensagens ambíguas são enviadas ao serviço Ollama local em `127.0.0.1:11434`; não há credencial externa e a inferência não depende da internet depois que o modelo foi baixado. O Ollama precisa estar instalado, ativo e com o modelo disponível. Solicitações claras passam pelo roteador local para evitar latência desnecessária; mensagens ambíguas usam Mastra/Ollama, com pensamento estendido desativado, contexto limitado a 4.096 tokens, saída limitada a 128 tokens e timeout de 30 segundos. A primeira resposta pode demorar mais enquanto o modelo é carregado na memória.
 
-O PRD permite simular o serviço externo de chamados, mas exige estado persistente. Por isso, o serviço de chamados é implementado no backend local, e seus registros são gravados em SQLite. A camada de agente apenas escolhe uma intenção; o backend valida titularidade, parâmetros e regras antes de qualquer operação. O modo Mastra usa o modelo escolhido quando há uma chave; o modo local fica claramente identificado quando não há credencial.
+O PRD permite simular o serviço externo de chamados, mas exige estado persistente. Por isso, o serviço de chamados é implementado no backend local, e seus registros são gravados em SQLite. A camada de agente apenas escolhe uma intenção; o backend valida titularidade, parâmetros e regras antes de qualquer operação. O roteador determinístico permanece disponível ao definir `NEXO_AGENT_MODE=local`.
 
 ## Arquitetura
 
@@ -48,7 +48,7 @@ flowchart LR
 ### Decisão do agente
 
 1. A API valida o cookie, perfil, conversa, texto e limite da sessão.
-2. O roteador local escolhe imediatamente intenções claras para FAQ, consulta, complemento, abertura, transferência e assunto fora do escopo. Com `NEXO_AGENT_MODE=mastra` e `OPENAI_API_KEY` configurada, mensagens ambíguas seguem para o Mastra e o GPT classifica em um esquema Zod; a saída ainda passa pelas mesmas regras de negócio. A chamada ao provedor é limitada a 15 segundos.
+2. O roteador local escolhe imediatamente intenções claras para FAQ, consulta, complemento, abertura, transferência e assunto fora do escopo. Com `NEXO_AGENT_MODE=mastra`, mensagens ambíguas seguem para o Mastra e o Qwen3 via Ollama classifica em um esquema Zod; a saída ainda passa pelas mesmas regras de negócio. A chamada ao modelo é limitada a 30 segundos.
 3. O serviço executável correspondente lê ou grava os dados do usuário autenticado. Ações de criação, atualização e reabertura geram um rascunho antes de gravar.
 4. O resultado confirmado é persistido e exibido com o cartão e a trilha de decisão. Erros são convertidos em resposta controlada; o agente não afirma sucesso se a gravação não foi concluída.
 5. Uma transferência muda o estado para `waiting` e pausa o agente. Um analista pode assumir, conversar com o funcionário, devolver a sessão ao agente ou encerrá-la.
@@ -107,7 +107,7 @@ tests/                 testes dos fluxos e regras de negócio
 ## Requisitos
 
 - Node.js 22.22.0 ou superior e npm.
-- `OPENAI_API_KEY` é necessária para chamadas ao GPT pela API da OpenAI. Sem ela, o app usa o roteador local; chamadas GPT têm cobrança e limites definidos pela conta OpenAI.
+- [Ollama](https://ollama.com/download) instalado e em execução. Depois de baixar o modelo, a classificação local não precisa de chave de API nem de conexão com provedor externo.
 - Não é necessário Docker: a demonstração usa SQLite local.
 
 ## Instalar e executar
@@ -115,10 +115,11 @@ tests/                 testes dos fluxos e regras de negócio
 ```bash
 cp .env.example .env
 npm install
+ollama pull qwen3:4b
 npm run dev
 ```
 
-O `.env.example` já configura Mastra com `openai/gpt-6.1-sol`. Para habilitar chamadas reais ao GPT, preencha `OPENAI_API_KEY` no `.env` com uma chave da [plataforma OpenAI](https://platform.openai.com/api-keys). O script `predev` inicializa o schema e carrega o seed antes de iniciar o Next.js em `http://localhost:3000`. Sem a chave, a interface indica “Assistente local online” e usa o roteador local. O carregamento do seed pode ser repetido sem duplicar os dados.
+O `.env.example` configura Mastra com `ollama/qwen3:4b`. Instale e abra o Ollama antes de iniciar a aplicação. No macOS, também é possível instalar o serviço com Homebrew (`brew install ollama`) e iniciá-lo em outro terminal com `ollama serve`; em seguida execute `ollama pull qwen3:4b`. O endpoint local padrão é `http://127.0.0.1:11434/api` e pode ser alterado em `OLLAMA_BASE_URL`. O script `predev` inicializa o schema e carrega o seed antes de iniciar o Next.js em `http://localhost:3000`. O carregamento do seed pode ser repetido sem duplicar os dados. Sem o serviço local, os fluxos determinísticos claros continuam disponíveis, mas mensagens ambíguas que dependem do LLM retornam um erro controlado.
 
 ### Contas de demonstração
 
@@ -133,18 +134,18 @@ O PRD especifica que a demonstração aceita qualquer senha. Essa autenticação
 
 | Variável | Padrão | Uso |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | vazio | Chave para chamadas reais ao GPT pela API da OpenAI. |
-| `NEXO_AGENT_MODE` | `mastra` no `.env.example` | `mastra` ou `local`; sem chave, o app identifica e usa o roteador local. |
-| `NEXO_LLM_MODEL` | `openai/gpt-6.1-sol` | Modelo de classificação configurável para Mastra. |
+| `NEXO_AGENT_MODE` | `mastra` no `.env.example` | `mastra` usa o modelo configurado no Ollama; `local` desativa chamadas ao LLM. |
+| `NEXO_LLM_MODEL` | `ollama/qwen3:4b` | Provider e modelo usados pelo Mastra; o prefixo deve ser `ollama/`. |
+| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434/api` | URL base da API local do Ollama. |
 | `SESSION_SECRET` | segredo local de demonstração | Em produção, defina valor aleatório com pelo menos 32 caracteres. |
 | `DB_PATH` | `./data/nexo-assist.sqlite` | Nome relativo dentro de `data/` ou caminho absoluto; `:memory:` é usado nos testes. |
 | `APP_TIMEZONE` | `America/Bahia` | Fuso dos horários úteis e da apresentação do SLA. |
 
 `.env.example` contém somente valores de exemplo e é seguro para commit. Nunca publique `.env`, tokens ou chaves reais.
 
-O `.env.example` seleciona `openai/gpt-6.1-sol` e o modo Mastra. Configure sua própria `OPENAI_API_KEY` no `.env` e reinicie a aplicação para habilitar chamadas reais. Sem chave, a aplicação mostra “Assistente local online” e não chama um LLM. Se a API falhar ou exceder 15 segundos, o chat informa que a classificação não foi concluída; não declara que o GPT foi usado nem executa uma ação baseada em uma resposta inexistente. O backend continua responsável pelas decisões de acesso e execução.
+O `.env.example` seleciona `ollama/qwen3:4b` e o modo Mastra. Não há chave a configurar. Se o Ollama estiver desligado, o modelo não tiver sido baixado ou a geração exceder 30 segundos, o chat informa que a classificação não foi concluída; não afirma que usou o LLM nem executa uma ação baseada em uma resposta inexistente. O backend continua responsável pelas decisões de acesso e execução.
 
-Para a avaliação do requisito de agente/LLM do PRD, execute com uma chave OpenAI válida e `NEXO_AGENT_MODE=mastra`. O modo local permite explorar os fluxos sem credenciais, mas não substitui uma chamada real ao GPT quando a integração LLM for avaliada.
+Para avaliar a integração de agente/LLM do PRD, mantenha `NEXO_AGENT_MODE=mastra`, inicie o Ollama e confirme que `ollama list` mostra `qwen3:4b`. A primeira mensagem ambígua após o serviço iniciar pode levar mais tempo durante o carregamento do modelo; mensagens com intenção clara continuam passando pelo roteador local.
 
 ## Banco de dados
 
@@ -224,7 +225,7 @@ O checklist de rastreabilidade está em [`docs/requirements-checklist.md`](docs/
 
 - Login e senha são de demonstração, sem diretório corporativo ou senha real.
 - O provedor de chamados é local; não há integração com ServiceNow, Jira Service Management ou outro ITSM.
-- Sem `OPENAI_API_KEY`, a classificação local usa regras e similaridade lexical; casos ambíguos podem exigir esclarecimento. Para demonstrar o LLM, configure uma chave de API da OpenAI.
+- O modelo local exige que o Ollama esteja instalado, ativo e com `qwen3:4b` baixado. Sem ele, mensagens claras seguem pelo roteador local; mensagens ambíguas recebem erro controlado até o serviço voltar.
 - A fila de analistas é uma demonstração local com atualização por polling; não há WebSocket, presença real ou distribuição de carga entre instâncias.
 - Redefinição de senha, privacidade e e-mail de suporte não têm integração de envio externo.
 - A regra de SLA não desconta feriados, pois o requisito não disponibiliza esse calendário.
@@ -244,4 +245,4 @@ git remote add origin <URL_DO_REPOSITORIO>
 git push -u origin main
 ```
 
-No GitHub, configure `OPENAI_API_KEY` e `SESSION_SECRET` como segredos de ambiente apenas se publicar uma implantação com o modo Mastra. Não inclua o banco local nem credenciais no histórico Git.
+Não inclua o banco local nem arquivos `.env` no histórico Git. O Ollama é executado na máquina que hospeda o backend; uma implantação remota precisa instalar e disponibilizar esse serviço no próprio ambiente de execução. Configure `SESSION_SECRET` como segredo no ambiente de hospedagem.
