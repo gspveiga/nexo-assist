@@ -4,6 +4,14 @@ import { searchKnowledge } from "../services/knowledge.ts";
 import type { SqlDatabase } from "../db/database.ts";
 
 export type Intent = "faq" | "lookup" | "update" | "create" | "handoff" | "out_of_scope" | "unknown";
+
+export class AgentProviderError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentProviderError";
+  }
+}
+
 export interface IntentDecision {
   intent: Intent;
   query: string;
@@ -71,15 +79,19 @@ export async function routeMessage(
   context: { state: ConversationState; draft: TicketDraft | null; recentMessages: string[] },
 ): Promise<IntentDecision> {
   if (context.state !== "agent" || context.draft) return localRoute(text, db);
-  if (getAgentMode() !== "mastra") return localRoute(text, db);
+  const localDecision = localRoute(text, db);
+  if (getAgentMode() !== "mastra" || localDecision.confidence >= 0.8) return localDecision;
   try {
     const { routeWithMastra } = await import("./mastra-router.ts");
     const decision = await routeWithMastra(text, context.recentMessages);
-    if (decision.confidence < 0.55) return { ...localRoute(text, db), reason: "A confiança do LLM foi baixa; usei o roteador local conservador." };
+    if (decision.confidence < 0.55) return { ...localDecision, reason: "A confiança do LLM foi baixa; usei o roteador local conservador." };
     return { ...decision, mode: "mastra" };
   } catch (error) {
-    console.error("Mastra não respondeu:", error instanceof Error ? error.message : error);
-    throw new Error("O modelo de IA não respondeu. Tente novamente quando o provedor estiver disponível.");
+    console.error("Mastra não respondeu:", error instanceof Error ? error.name : "erro desconhecido");
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw new AgentProviderError("O Gemini demorou mais de 15 segundos para responder. Tente novamente.");
+    }
+    throw new AgentProviderError("Não foi possível consultar o Gemini. Verifique a chave e a cota da API.");
   }
 }
 

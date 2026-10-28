@@ -20,12 +20,12 @@ Agente de atendimento de TI para a empresa fictícia Nexo. O funcionário conver
 - **Next.js 16 / React 19** para interface e Route Handlers HTTP.
 - **TypeScript estrito** nos componentes, contratos e serviços.
 - **SQLite (`node:sqlite`)** para usuários, conversas, mensagens, chamados, eventos e FAQ; sem serviço externo para a demonstração.
-- **Mastra + Google Gemini 3.8 Flash** para classificação de intenção com saída estruturada. O projeto também tem roteamento local determinístico para demonstração sem chave.
+- **Mastra + Google Gemini 3.8 Flash** para classificar mensagens ambíguas com saída estruturada. Intenções comuns reconhecidas com alta confiança seguem pelo roteador local rápido.
 - **Node.js 22.22 ou superior**. `node:sqlite` e o strip de tipos do Node ainda são recursos experimentais nessa versão; o projeto não usa banco em memória na execução normal.
 
 ### Motivo da escolha do modelo e do framework
 
-O Gemini 3.8 Flash foi escolhido para classificar intenções porque a tarefa precisa de respostas rápidas e previsíveis em texto estruturado, sem pedir ao modelo que altere dados diretamente. O modelo aceita saída estruturada e tem uma camada gratuita padrão com limites de uso. O Mastra integra o modelo ao agente TypeScript e valida a classificação com um schema Zod; as regras de autorização e as operações continuam nos serviços do backend. O Gemini 3.5 Flash (`gemini-3.5-flash`) foi substituído pelo Google e é encaminhado automaticamente ao 3.6 Flash, então o projeto usa o 3.8 Flash atual.
+O Gemini 3.8 Flash foi escolhido para classificar intenções ambíguas porque a tarefa precisa de respostas rápidas e previsíveis em texto estruturado, sem pedir ao modelo que altere dados diretamente. O modelo aceita saída estruturada e tem uma camada gratuita padrão com limites de uso. O Mastra integra o modelo ao agente TypeScript e valida a classificação com um schema Zod; as regras de autorização e as operações continuam nos serviços do backend. Para evitar latência de rede em solicitações claras, intenções locais com confiança igual ou superior a 0,8 (como consultar um chamado, pedir um analista ou relatar uma falha identificável) são encaminhadas imediatamente. O Mastra/Gemini é chamado quando o roteador não encontra sinais suficientes. O Gemini 3.5 Flash (`gemini-3.5-flash`) foi substituído pelo Google e é encaminhado automaticamente ao 3.6 Flash, então o projeto usa o 3.8 Flash atual.
 
 O PRD permite simular o serviço externo de chamados, mas exige estado persistente. Por isso, o serviço de chamados é implementado no backend local, e seus registros são gravados em SQLite. A camada de agente apenas escolhe uma intenção; o backend valida titularidade, parâmetros e regras antes de qualquer operação. O modo Mastra usa o modelo escolhido quando há uma chave; o modo local fica claramente identificado quando não há credencial.
 
@@ -46,7 +46,7 @@ flowchart LR
 ### Decisão do agente
 
 1. A API valida o cookie, perfil, conversa, texto e limite da sessão.
-2. O roteador local escolhe entre FAQ, consulta, complemento, abertura, transferência, assunto fora do escopo ou baixa confiança. Com `NEXO_AGENT_MODE=mastra` e uma chave configurada, o Mastra classifica a mensagem em um esquema Zod; a saída ainda passa pelas mesmas regras de negócio.
+2. O roteador local escolhe imediatamente intenções claras para FAQ, consulta, complemento, abertura, transferência e assunto fora do escopo. Com `NEXO_AGENT_MODE=mastra` e uma chave configurada, mensagens ambíguas seguem para o Mastra e o Gemini classifica em um esquema Zod; a saída ainda passa pelas mesmas regras de negócio. A chamada ao provedor é limitada a 15 segundos.
 3. O serviço executável correspondente lê ou grava os dados do usuário autenticado. Ações de criação, atualização e reabertura geram um rascunho antes de gravar.
 4. O resultado confirmado é persistido e exibido com o cartão e a trilha de decisão. Erros são convertidos em resposta controlada; o agente não afirma sucesso se a gravação não foi concluída.
 5. Uma transferência muda o estado para `waiting` e pausa o agente. Um analista pode assumir, conversar com o funcionário, devolver a sessão ao agente ou encerrá-la.
@@ -140,7 +140,7 @@ O PRD especifica que a demonstração aceita qualquer senha. Essa autenticação
 
 `.env.example` contém somente valores de exemplo e é seguro para commit. Nunca publique `.env`, tokens ou chaves reais.
 
-O `.env.example` seleciona `google/gemini-3.8-flash` e o modo Mastra. Configure sua própria `GOOGLE_API_KEY` no `.env` e reinicie a aplicação para habilitar chamadas reais. Sem chave, a aplicação mostra “Assistente local online”; se o provedor falhar durante uma chamada, o sistema informa que a operação não pôde ser concluída em vez de fingir que usou o LLM. O backend continua responsável pelas decisões de acesso e execução.
+O `.env.example` seleciona `google/gemini-3.8-flash` e o modo Mastra. Configure sua própria `GOOGLE_API_KEY` no `.env` e reinicie a aplicação para habilitar chamadas reais. Sem chave, a aplicação mostra “Assistente local online”; se o provedor falhar ou exceder o limite de 15 segundos, o sistema informa que não conseguiu consultar o modelo em vez de fingir que usou o LLM. O backend continua responsável pelas decisões de acesso e execução.
 
 Para a avaliação do requisito de agente/LLM do PRD, execute com uma chave Gemini configurada. O modo local permite explorar a demonstração sem credenciais, mas não substitui essa integração. O nível gratuito tem limites e a disponibilidade pode variar por conta/projeto; no nível gratuito, os dados podem ser usados para melhorar produtos Google.
 

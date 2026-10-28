@@ -28,7 +28,7 @@ import {
 import { inferAffectedScope, inferCategory, inferPriority, inferType, makeTicketTitle, similarity } from "./classification.ts";
 import { searchKnowledge } from "./knowledge.ts";
 import { calculateSlaDueAt, formatDateTime, formatShortDate, isOverdue, prioritySlaLabel } from "./sla.ts";
-import { extractTicketNumber, isOutOfScope, looksLikeCancellation, looksLikeConfirmation, openTickets, routeMessage } from "../agent/router.ts";
+import { AgentProviderError, extractTicketNumber, isOutOfScope, looksLikeCancellation, looksLikeConfirmation, openTickets, routeMessage } from "../agent/router.ts";
 import { ServiceError } from "./errors.ts";
 
 const maxMessageLength = 2000;
@@ -734,6 +734,8 @@ export async function processUserMessage(
   } catch (error) {
     if (error instanceof ServiceError) {
       reply(db, conversationId, error.message, makeTrace("validação", "não_executou_ação", 0.99, error.message, "validar_regra_de_negocio", "blocked"));
+    } else if (error instanceof AgentProviderError) {
+      reply(db, conversationId, error.message, makeTrace("sistema", "falha_no_modelo", 0.3, error.message, "classificar_intencao", "error"));
     } else {
       console.error("Falha ao processar mensagem do Nexo Assist:", error);
       reply(db, conversationId, "O service desk não conseguiu concluir essa operação agora. Sua mensagem foi mantida; tente novamente em instantes.", makeTrace("sistema", "falha_de_ferramenta", 0.3, "A operação falhou antes de ser confirmada.", "tratar_falha", "error"));

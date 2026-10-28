@@ -27,10 +27,19 @@ unknown quando não houver informação suficiente. A aplicação valida a decis
 
 export async function routeWithMastra(text: string, recentMessages: string[]): Promise<Omit<IntentDecision, "mode">> {
   const history = recentMessages.slice(-6).join("\n");
-  const response = await routerAgent.generate(
-    `Contexto recente:\n${history || "(sem histórico)"}\n\nMensagem atual:\n${text}`,
-    { structuredOutput: { schema: decisionSchema } },
-  );
-  const parsed = decisionSchema.parse(response.object);
-  return { ...parsed, intent: parsed.intent as Intent };
+  const timeoutSignal = AbortSignal.timeout(15_000);
+  try {
+    const response = await routerAgent.generate(
+      `Contexto recente:\n${history || "(sem histórico)"}\n\nMensagem atual:\n${text}`,
+      { structuredOutput: { schema: decisionSchema }, abortSignal: timeoutSignal },
+    );
+    const parsed = decisionSchema.parse(response.object);
+    if (timeoutSignal.aborted) throw timeoutSignal.reason;
+    return { ...parsed, intent: parsed.intent as Intent };
+  } catch (error) {
+    // Alguns provedores devolvem uma saída estruturada incompleta quando o
+    // SDK aborta a geração. Preserve a causa real para a camada de serviço.
+    if (timeoutSignal.aborted) throw timeoutSignal.reason;
+    throw error;
+  }
 }

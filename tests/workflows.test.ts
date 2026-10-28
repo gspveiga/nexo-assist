@@ -14,6 +14,7 @@ import {
 } from "../src/server/db/database.ts";
 import { seedDemoData } from "../src/server/db/seed.ts";
 import { processUserMessage } from "../src/server/services/chat.ts";
+import { routeMessage } from "../src/server/agent/router.ts";
 import { closeConversation, getConsoleQueue, returnConversationToAgent, sendAnalystMessage, takeConversation } from "../src/server/services/console.ts";
 import { ServiceError } from "../src/server/services/errors.ts";
 import { createSessionToken, verifySessionToken } from "../src/server/auth/session.ts";
@@ -61,6 +62,30 @@ test("ticket lookup lists only the signed-in employee's tickets", async (t) => {
   const privateResult = await processUserMessage(f.db, f.ana, f.conversationId, "Mostre o INC-20460");
   assert.match(privateResult.messages.at(-1)!.body, /por privacidade/i);
   assert.equal(privateResult.messages.at(-1)!.decision?.outcome, "blocked");
+});
+
+test("Mastra mode routes clear ticket-status requests without waiting for the LLM", async (t) => {
+  const f = fixture();
+  const previousMode = process.env.NEXO_AGENT_MODE;
+  const previousKey = process.env.GOOGLE_API_KEY;
+  t.after(() => {
+    f.close();
+    if (previousMode === undefined) delete process.env.NEXO_AGENT_MODE;
+    else process.env.NEXO_AGENT_MODE = previousMode;
+    if (previousKey === undefined) delete process.env.GOOGLE_API_KEY;
+    else process.env.GOOGLE_API_KEY = previousKey;
+  });
+  process.env.NEXO_AGENT_MODE = "mastra";
+  process.env.GOOGLE_API_KEY = "test-key";
+
+  const decision = await routeMessage("Qual o status do meu chamado?", f.db, {
+    state: "agent",
+    draft: null,
+    recentMessages: [],
+  });
+
+  assert.equal(decision.mode, "local");
+  assert.equal(decision.intent, "lookup");
 });
 
 test("valid update is staged, confirmed, persisted, and invalid ownership is rejected", async (t) => {
