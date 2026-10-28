@@ -5,7 +5,7 @@ Agente de atendimento de TI para a empresa fictícia Nexo. O funcionário conver
 ## Funcionalidades
 
 - Login de demonstração para funcionários e analistas, com cookie assinado e rotas separadas por perfil.
-- Conversas persistidas, histórico por funcionário e limite de 30 mensagens por conversa.
+- Conversas persistidas, histórico por funcionário, limite de 30 mensagens por conversa e exclusão de conversas próprias que não estejam com o service desk.
 - Consulta de oito artigos de FAQ incluídos no seed. O assistente só responde com conteúdo que encontrou na central.
 - Consulta de chamados limitada ao titular autenticado, com status, prioridade, resumo e prazo.
 - Complemento e reabertura dentro de sete dias apresentados como rascunho e gravados somente após confirmação.
@@ -20,12 +20,14 @@ Agente de atendimento de TI para a empresa fictícia Nexo. O funcionário conver
 - **Next.js 16 / React 19** para interface e Route Handlers HTTP.
 - **TypeScript estrito** nos componentes, contratos e serviços.
 - **SQLite (`node:sqlite`)** para usuários, conversas, mensagens, chamados, eventos e FAQ; sem serviço externo para a demonstração.
-- **Mastra + Google Gemini 3.8 Flash** para classificar mensagens ambíguas com saída estruturada. Intenções comuns reconhecidas com alta confiança seguem pelo roteador local rápido.
+- **Mastra + OpenAI GPT-6.1 Sol** para classificar mensagens ambíguas com saída estruturada quando há chave de API. Sem credencial, o roteador determinístico local mantém a demonstração funcional e rápida.
 - **Node.js 22.22 ou superior**. `node:sqlite` e o strip de tipos do Node ainda são recursos experimentais nessa versão; o projeto não usa banco em memória na execução normal.
 
 ### Motivo da escolha do modelo e do framework
 
-O Gemini 3.8 Flash foi escolhido para classificar intenções ambíguas porque a tarefa precisa de respostas rápidas e previsíveis em texto estruturado, sem pedir ao modelo que altere dados diretamente. O modelo aceita saída estruturada e tem uma camada gratuita padrão com limites de uso. O Mastra integra o modelo ao agente TypeScript e valida a classificação com um schema Zod; as regras de autorização e as operações continuam nos serviços do backend. Para evitar latência de rede em solicitações claras, intenções locais com confiança igual ou superior a 0,8 (como consultar um chamado, pedir um analista ou relatar uma falha identificável) são encaminhadas imediatamente. O Mastra/Gemini é chamado quando o roteador não encontra sinais suficientes. O Gemini 3.5 Flash (`gemini-3.5-flash`) foi substituído pelo Google e é encaminhado automaticamente ao 3.6 Flash, então o projeto usa o 3.8 Flash atual.
+O **GPT-6.1 Sol** foi escolhido para classificar mensagens que o roteador local não reconhece com segurança. O modelo retorna uma decisão estruturada; o Mastra integra a chamada ao agente TypeScript e um schema Zod valida os campos. O backend continua responsável por autorização e operações, sem deixar o modelo alterar dados diretamente. Consulte a [documentação do GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol) e a [documentação do Mastra](https://mastra.ai/docs).
+
+O Next.js roda localmente, mas o modelo GPT **não** roda no computador: quando `OPENAI_API_KEY` está configurada e `NEXO_AGENT_MODE=mastra`, a classificação é enviada à API da OpenAI e depende de internet e da cota da conta. Sem a chave, a aplicação usa o roteador determinístico local, sem chamar um LLM. Solicitações claras também passam pelo roteador local para evitar latência desnecessária; mensagens ambíguas usam Mastra/GPT. Chamadas ao provedor têm limite de 15 segundos.
 
 O PRD permite simular o serviço externo de chamados, mas exige estado persistente. Por isso, o serviço de chamados é implementado no backend local, e seus registros são gravados em SQLite. A camada de agente apenas escolhe uma intenção; o backend valida titularidade, parâmetros e regras antes de qualquer operação. O modo Mastra usa o modelo escolhido quando há uma chave; o modo local fica claramente identificado quando não há credencial.
 
@@ -46,7 +48,7 @@ flowchart LR
 ### Decisão do agente
 
 1. A API valida o cookie, perfil, conversa, texto e limite da sessão.
-2. O roteador local escolhe imediatamente intenções claras para FAQ, consulta, complemento, abertura, transferência e assunto fora do escopo. Com `NEXO_AGENT_MODE=mastra` e uma chave configurada, mensagens ambíguas seguem para o Mastra e o Gemini classifica em um esquema Zod; a saída ainda passa pelas mesmas regras de negócio. A chamada ao provedor é limitada a 15 segundos.
+2. O roteador local escolhe imediatamente intenções claras para FAQ, consulta, complemento, abertura, transferência e assunto fora do escopo. Com `NEXO_AGENT_MODE=mastra` e `OPENAI_API_KEY` configurada, mensagens ambíguas seguem para o Mastra e o GPT classifica em um esquema Zod; a saída ainda passa pelas mesmas regras de negócio. A chamada ao provedor é limitada a 15 segundos.
 3. O serviço executável correspondente lê ou grava os dados do usuário autenticado. Ações de criação, atualização e reabertura geram um rascunho antes de gravar.
 4. O resultado confirmado é persistido e exibido com o cartão e a trilha de decisão. Erros são convertidos em resposta controlada; o agente não afirma sucesso se a gravação não foi concluída.
 5. Uma transferência muda o estado para `waiting` e pausa o agente. Um analista pode assumir, conversar com o funcionário, devolver a sessão ao agente ou encerrá-la.
@@ -105,7 +107,7 @@ tests/                 testes dos fluxos e regras de negócio
 ## Requisitos
 
 - Node.js 22.22.0 ou superior e npm.
-- Uma chave Gemini API é necessária para usar o LLM escolhido. O Gemini 3.8 Flash tem camada gratuita com limites; disponibilidade depende da conta/projeto Google.
+- `OPENAI_API_KEY` é necessária para chamadas ao GPT pela API da OpenAI. Sem ela, o app usa o roteador local; chamadas GPT têm cobrança e limites definidos pela conta OpenAI.
 - Não é necessário Docker: a demonstração usa SQLite local.
 
 ## Instalar e executar
@@ -116,7 +118,7 @@ npm install
 npm run dev
 ```
 
-Antes de iniciar, preencha `GOOGLE_API_KEY` no `.env` com uma chave criada no [Google AI Studio](https://aistudio.google.com/apikey) para usar o Gemini 3.8 Flash. O script `predev` inicializa o schema e carrega o seed antes de iniciar o Next.js em `http://localhost:3000`. Sem chave, a interface indica que está usando o roteador local. O carregamento do seed pode ser repetido sem duplicar os dados.
+O `.env.example` já configura Mastra com `openai/gpt-6.1-sol`. Para habilitar chamadas reais ao GPT, preencha `OPENAI_API_KEY` no `.env` com uma chave da [plataforma OpenAI](https://platform.openai.com/api-keys). O script `predev` inicializa o schema e carrega o seed antes de iniciar o Next.js em `http://localhost:3000`. Sem a chave, a interface indica “Assistente local online” e usa o roteador local. O carregamento do seed pode ser repetido sem duplicar os dados.
 
 ### Contas de demonstração
 
@@ -131,18 +133,18 @@ O PRD especifica que a demonstração aceita qualquer senha. Essa autenticação
 
 | Variável | Padrão | Uso |
 | --- | --- | --- |
-| `GOOGLE_API_KEY` | vazio | Chave necessária para chamadas reais ao Gemini API via Google AI Studio. |
+| `OPENAI_API_KEY` | vazio | Chave para chamadas reais ao GPT pela API da OpenAI. |
 | `NEXO_AGENT_MODE` | `mastra` no `.env.example` | `mastra` ou `local`; sem chave, o app identifica e usa o roteador local. |
-| `NEXO_LLM_MODEL` | `google/gemini-3.8-flash` | Modelo de classificação configurável. |
+| `NEXO_LLM_MODEL` | `openai/gpt-6.1-sol` | Modelo de classificação configurável para Mastra. |
 | `SESSION_SECRET` | segredo local de demonstração | Em produção, defina valor aleatório com pelo menos 32 caracteres. |
 | `DB_PATH` | `./data/nexo-assist.sqlite` | Nome relativo dentro de `data/` ou caminho absoluto; `:memory:` é usado nos testes. |
 | `APP_TIMEZONE` | `America/Bahia` | Fuso dos horários úteis e da apresentação do SLA. |
 
 `.env.example` contém somente valores de exemplo e é seguro para commit. Nunca publique `.env`, tokens ou chaves reais.
 
-O `.env.example` seleciona `google/gemini-3.8-flash` e o modo Mastra. Configure sua própria `GOOGLE_API_KEY` no `.env` e reinicie a aplicação para habilitar chamadas reais. Sem chave, a aplicação mostra “Assistente local online”; se o provedor falhar ou exceder o limite de 15 segundos, o sistema informa que não conseguiu consultar o modelo em vez de fingir que usou o LLM. O backend continua responsável pelas decisões de acesso e execução.
+O `.env.example` seleciona `openai/gpt-6.1-sol` e o modo Mastra. Configure sua própria `OPENAI_API_KEY` no `.env` e reinicie a aplicação para habilitar chamadas reais. Sem chave, a aplicação mostra “Assistente local online” e não chama um LLM. Se a API falhar ou exceder 15 segundos, o chat informa que a classificação não foi concluída; não declara que o GPT foi usado nem executa uma ação baseada em uma resposta inexistente. O backend continua responsável pelas decisões de acesso e execução.
 
-Para a avaliação do requisito de agente/LLM do PRD, execute com uma chave Gemini configurada. O modo local permite explorar a demonstração sem credenciais, mas não substitui essa integração. O nível gratuito tem limites e a disponibilidade pode variar por conta/projeto; no nível gratuito, os dados podem ser usados para melhorar produtos Google.
+Para a avaliação do requisito de agente/LLM do PRD, execute com uma chave OpenAI válida e `NEXO_AGENT_MODE=mastra`. O modo local permite explorar os fluxos sem credenciais, mas não substitui uma chamada real ao GPT quando a integração LLM for avaliada.
 
 ## Banco de dados
 
@@ -222,7 +224,7 @@ O checklist de rastreabilidade está em [`docs/requirements-checklist.md`](docs/
 
 - Login e senha são de demonstração, sem diretório corporativo ou senha real.
 - O provedor de chamados é local; não há integração com ServiceNow, Jira Service Management ou outro ITSM.
-- Sem chave, a classificação local usa regras e similaridade lexical; casos ambíguos devem ser revisados. Para demonstrar o LLM selecionado, configure uma chave de API válida.
+- Sem `OPENAI_API_KEY`, a classificação local usa regras e similaridade lexical; casos ambíguos podem exigir esclarecimento. Para demonstrar o LLM, configure uma chave de API da OpenAI.
 - A fila de analistas é uma demonstração local com atualização por polling; não há WebSocket, presença real ou distribuição de carga entre instâncias.
 - Redefinição de senha, privacidade e e-mail de suporte não têm integração de envio externo.
 - A regra de SLA não desconta feriados, pois o requisito não disponibiliza esse calendário.
@@ -242,4 +244,4 @@ git remote add origin <URL_DO_REPOSITORIO>
 git push -u origin main
 ```
 
-No GitHub, configure `GOOGLE_API_KEY` e `SESSION_SECRET` como segredos de ambiente apenas se publicar uma implantação com o modo Mastra. Não inclua o banco local nem credenciais no histórico Git.
+No GitHub, configure `OPENAI_API_KEY` e `SESSION_SECRET` como segredos de ambiente apenas se publicar uma implantação com o modo Mastra. Não inclua o banco local nem credenciais no histórico Git.

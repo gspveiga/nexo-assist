@@ -247,6 +247,14 @@ export function listConversationsForUser(db: SqlDatabase, userId: string): Conve
   `).all(userId).map((row) => conversationFromRow(row as Record<string, unknown>));
 }
 
+export function deleteConversationRecord(db: SqlDatabase, conversationId: string, userId: string): boolean {
+  const result = db.prepare(`
+    DELETE FROM conversations
+    WHERE id = ? AND user_id = ? AND state IN ('agent', 'closed')
+  `).run(conversationId, userId);
+  return Number(result.changes) === 1;
+}
+
 export function listQueueConversations(db: SqlDatabase): Conversation[] {
   return db.prepare(`
     SELECT * FROM conversations WHERE state IN ('waiting', 'human') ORDER BY updated_at ASC

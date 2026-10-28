@@ -99,6 +99,9 @@ try {
   const createdConversation = await json("/api/conversations", { method: "POST" }, employeeCookie);
   assert.equal(createdConversation.response.status, 201);
   const conversationId = createdConversation.body.conversation.id;
+  const otherEmployeeCookie = await login("carla.mendes@nexo.com.br");
+  const foreignDelete = await json(`/api/conversations?id=${conversationId}`, { method: "DELETE" }, otherEmployeeCookie);
+  assert.equal(foreignDelete.response.status, 404);
 
   const faq = await postChat(employeeCookie, conversationId, "Como redefino a senha da rede Nexo?");
   assert.equal(faq.response.status, 200);
@@ -124,6 +127,8 @@ try {
 
   const transfer = await postChat(employeeCookie, conversationId, "Quero falar com um analista sobre INC-20311");
   assert.equal(transfer.body.conversation.state, "waiting");
+  const activeDelete = await json(`/api/conversations?id=${conversationId}`, { method: "DELETE" }, employeeCookie);
+  assert.equal(activeDelete.response.status, 409);
   const paused = await postChat(employeeCookie, conversationId, "Ainda está parado");
   assert.equal(paused.response.status, 409);
 
@@ -150,11 +155,17 @@ try {
   const closed = await json(`/api/console/${conversationId}/close`, { method: "POST" }, analystCookie);
   assert.equal(closed.body.conversation.state, "closed");
 
+  const deleted = await json(`/api/conversations?id=${conversationId}`, { method: "DELETE" }, employeeCookie);
+  assert.equal(deleted.response.status, 200);
+  assert.equal(deleted.body.deleted, true);
+  const missingConversation = await json(`/api/conversations?id=${conversationId}`, {}, employeeCookie);
+  assert.equal(missingConversation.response.status, 404);
+
   const logout = await json("/api/auth/logout", { method: "POST" }, analystCookie);
   assert.equal(logout.response.status, 200);
   assert.match(logout.response.headers.get("set-cookie") ?? "", /nexo_session=;/i);
 
-  console.log("HTTP smoke test passou: login, páginas, autorização, FAQ, chamados, transferência, console e logout.");
+  console.log("HTTP smoke test passou: login, páginas, autorização, FAQ, chamados, transferência, console, exclusão de conversa e logout.");
 } finally {
   next.kill("SIGTERM");
   await Promise.race([serverExit, new Promise((resolveWait) => setTimeout(resolveWait, 3000))]);

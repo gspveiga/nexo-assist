@@ -4,16 +4,19 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  addMessage,
   createConversation,
   createDatabase,
   findConversationById,
   findTicketByNumber,
   findUserByEmail,
+  listMessages,
   listTickets,
+  updateConversation,
   type SqlDatabase,
 } from "../src/server/db/database.ts";
 import { seedDemoData } from "../src/server/db/seed.ts";
-import { processUserMessage } from "../src/server/services/chat.ts";
+import { deleteConversationForUser, processUserMessage } from "../src/server/services/chat.ts";
 import { routeMessage } from "../src/server/agent/router.ts";
 import { closeConversation, getConsoleQueue, returnConversationToAgent, sendAnalystMessage, takeConversation } from "../src/server/services/console.ts";
 import { ServiceError } from "../src/server/services/errors.ts";
@@ -67,16 +70,16 @@ test("ticket lookup lists only the signed-in employee's tickets", async (t) => {
 test("Mastra mode routes clear ticket-status requests without waiting for the LLM", async (t) => {
   const f = fixture();
   const previousMode = process.env.NEXO_AGENT_MODE;
-  const previousKey = process.env.GOOGLE_API_KEY;
+  const previousKey = process.env.OPENAI_API_KEY;
   t.after(() => {
     f.close();
     if (previousMode === undefined) delete process.env.NEXO_AGENT_MODE;
     else process.env.NEXO_AGENT_MODE = previousMode;
-    if (previousKey === undefined) delete process.env.GOOGLE_API_KEY;
-    else process.env.GOOGLE_API_KEY = previousKey;
+    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousKey;
   });
   process.env.NEXO_AGENT_MODE = "mastra";
-  process.env.GOOGLE_API_KEY = "test-key";
+  process.env.OPENAI_API_KEY = "test-key";
 
   const decision = await routeMessage("Qual o status do meu chamado?", f.db, {
     state: "agent",
@@ -86,6 +89,41 @@ test("Mastra mode routes clear ticket-status requests without waiting for the LL
 
   assert.equal(decision.mode, "local");
   assert.equal(decision.intent, "lookup");
+});
+
+test("employee can delete their inactive conversation but not another user's or a live handoff", (t) => {
+  const f = fixture();
+  t.after(f.close);
+  const ticketsBefore = listTickets(f.db, f.ana.id).length;
+  const ownConversation = createConversation(f.db, f.ana.id);
+  addMessage(f.db, {
+    conversationId: ownConversation.id,
+    senderId: f.ana.id,
+    senderRole: "employee",
+    body: "Mensagem de demonstração",
+    actions: [],
+    decision: null,
+  });
+
+  deleteConversationForUser(f.db, ownConversation.id, f.ana);
+
+  assert.equal(findConversationById(f.db, ownConversation.id), null);
+  assert.deepEqual(listMessages(f.db, ownConversation.id), []);
+  assert.equal(listTickets(f.db, f.ana.id).length, ticketsBefore);
+
+  const otherConversation = createConversation(f.db, f.bruno.id);
+  assert.throws(
+    () => deleteConversationForUser(f.db, otherConversation.id, f.ana),
+    (error: unknown) => error instanceof ServiceError && error.code === "CONVERSATION_NOT_FOUND",
+  );
+
+  const liveHandoff = createConversation(f.db, f.ana.id);
+  updateConversation(f.db, liveHandoff.id, { state: "waiting" });
+  assert.throws(
+    () => deleteConversationForUser(f.db, liveHandoff.id, f.ana),
+    (error: unknown) => error instanceof ServiceError && error.code === "CONVERSATION_ACTIVE",
+  );
+  assert.equal(findConversationById(f.db, liveHandoff.id)?.state, "waiting");
 });
 
 test("valid update is staged, confirmed, persisted, and invalid ownership is rejected", async (t) => {

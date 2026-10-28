@@ -1,10 +1,7 @@
-export const defaultLlmModel = "google/gemini-3.8-flash";
+export const defaultLlmModel = "openai/gpt-6.1-sol";
 
 const providerApiKeyEnvironment: Record<string, string> = {
-  google: "GOOGLE_API_KEY",
   openai: "OPENAI_API_KEY",
-  anthropic: "ANTHROPIC_API_KEY",
-  xai: "XAI_API_KEY",
 };
 
 export function getAgentMode(): "local" | "mastra" {

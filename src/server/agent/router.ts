@@ -89,9 +89,9 @@ export async function routeMessage(
   } catch (error) {
     console.error("Mastra não respondeu:", error instanceof Error ? error.name : "erro desconhecido");
     if (error instanceof Error && error.name === "TimeoutError") {
-      throw new AgentProviderError("O Gemini demorou mais de 15 segundos para responder. Tente novamente.");
+      throw new AgentProviderError("O modelo de IA demorou mais de 15 segundos para responder. Tente novamente.");
     }
-    throw new AgentProviderError("Não foi possível consultar o Gemini. Verifique a chave e a cota da API.");
+    throw new AgentProviderError("Não foi possível consultar o modelo de IA. Verifique a chave e a cota da OpenAI.");
   }
 }
 

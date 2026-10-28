@@ -11,6 +11,7 @@ import type {
 import {
   addMessage,
   createTicketRecord,
+  deleteConversationRecord,
   findConversationById,
   findTicketById,
   findTicketByNumber,
@@ -751,6 +752,20 @@ export async function processUserMessage(
 export function getConversationForUser(db: SqlDatabase, conversationId: string, user: User): { conversation: Conversation; messages: ChatMessage[] } {
   const conversation = assertOwnedConversation(db, conversationId, user);
   return { conversation, messages: listMessages(db, conversationId) };
+}
+
+export function deleteConversationForUser(db: SqlDatabase, conversationId: string, user: User): void {
+  const conversation = assertOwnedConversation(db, conversationId, user);
+  if (conversation.state === "waiting" || conversation.state === "human") {
+    throw new ServiceError("A conversa está com o service desk. Aguarde o encerramento ou devolva-a ao agente antes de excluir.", 409, "CONVERSATION_ACTIVE");
+  }
+  if (!deleteConversationRecord(db, conversationId, user.id)) {
+    const latest = findConversationById(db, conversationId);
+    if (!latest || latest.userId !== user.id) {
+      throw new ServiceError("Conversa não encontrada.", 404, "CONVERSATION_NOT_FOUND");
+    }
+    throw new ServiceError("A conversa está com o service desk. Aguarde o encerramento ou devolva-a ao agente antes de excluir.", 409, "CONVERSATION_ACTIVE");
+  }
 }
 
 export function newConversation(db: SqlDatabase, user: User): Conversation {

@@ -2,20 +2,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { defaultLlmModel, getAgentMode } from "../src/server/agent/config.ts";
 
-test("selects Gemini through Mastra only when its provider key is configured", () => {
+test("selects GPT through Mastra only when its OpenAI key is configured", () => {
   const previous = {
     mode: process.env.NEXO_AGENT_MODE,
     model: process.env.NEXO_LLM_MODEL,
-    googleKey: process.env.GOOGLE_API_KEY,
+    openAiKey: process.env.OPENAI_API_KEY,
   };
 
   try {
     process.env.NEXO_AGENT_MODE = "mastra";
     process.env.NEXO_LLM_MODEL = defaultLlmModel;
-    delete process.env.GOOGLE_API_KEY;
+    delete process.env.OPENAI_API_KEY;
     assert.equal(getAgentMode(), "local");
 
-    process.env.GOOGLE_API_KEY = "test-key";
+    process.env.OPENAI_API_KEY = "test-key";
     assert.equal(getAgentMode(), "mastra");
 
     process.env.NEXO_AGENT_MODE = "local";
@@ -25,7 +25,7 @@ test("selects Gemini through Mastra only when its provider key is configured", (
     else process.env.NEXO_AGENT_MODE = previous.mode;
     if (previous.model === undefined) delete process.env.NEXO_LLM_MODEL;
     else process.env.NEXO_LLM_MODEL = previous.model;
-    if (previous.googleKey === undefined) delete process.env.GOOGLE_API_KEY;
-    else process.env.GOOGLE_API_KEY = previous.googleKey;
+    if (previous.openAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previous.openAiKey;
   }
 });

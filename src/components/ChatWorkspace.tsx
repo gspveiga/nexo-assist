@@ -89,6 +89,7 @@ export function ChatWorkspace({ user, agentMode, initial, history }: { user: Use
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyError, setHistoryError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const paused = conversation.state === "waiting" || conversation.state === "human";
   const count = Math.min(conversation.sessionMessageCount, 30);
@@ -148,10 +149,30 @@ export function ChatWorkspace({ user, agentMode, initial, history }: { user: Use
   async function selectConversation(item: Conversation) {
     const response = await fetch(`/api/conversations?id=${item.id}`, { cache: "no-store" });
     const result = await response.json() as ChatState & { error?: string };
-    if (!response.ok) { setError(result.error || "Não foi possível abrir a conversa."); return; }
+    if (!response.ok) { setHistoryError(result.error || "Não foi possível abrir a conversa."); return; }
     setConversation(result.conversation);
     setMessages(result.messages);
     setError("");
+    setHistoryError("");
+  }
+
+  async function removeConversation(item: Conversation) {
+    if (item.state === "waiting" || item.state === "human") return;
+    if (!window.confirm("Excluir esta conversa e todas as mensagens dela? Essa ação não pode ser desfeita.")) return;
+    setHistoryError("");
+    try {
+      const response = await fetch(`/api/conversations?id=${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || "Não foi possível excluir a conversa.");
+      const remaining = conversations.filter((conversationItem) => conversationItem.id !== item.id);
+      setConversations((items) => items.filter((conversationItem) => conversationItem.id !== item.id));
+      if (item.id === conversation.id) {
+        if (remaining[0]) await selectConversation(remaining[0]);
+        else await startNewConversation();
+      }
+    } catch (err) {
+      setHistoryError(err instanceof Error ? err.message : "Não foi possível excluir a conversa.");
+    }
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -224,13 +245,18 @@ export function ChatWorkspace({ user, agentMode, initial, history }: { user: Use
       {historyOpen && <button className="history-backdrop" aria-label="Fechar histórico" onClick={() => setHistoryOpen(false)} />}
       <aside className={`chat-history-panel ${historyOpen ? "history-open" : ""}`}>
         <div className="history-head"><div><strong>Conversas</strong><span>{conversations.length} salvas</span></div><button onClick={() => setHistoryOpen(false)} aria-label="Fechar histórico">×</button></div>
+        {historyError && <div className="history-error" role="alert">{historyError}</div>}
         <div className="history-list">
-          {conversations.map((item) => {
+          {conversations.length === 0 ? <p className="history-empty">Nenhuma conversa salva.</p> : conversations.map((item) => {
             const selected = item.id === conversation.id;
-            return <button key={item.id} className={`history-item ${selected ? "selected" : ""}`} onClick={() => void selectConversation(item)}>
-              <div className="history-avatar">{initials(user.name)}</div>
-              <div className="history-copy"><strong>{item.id === conversation.id ? title : item.state === "waiting" ? "Aguardando analista" : "Atendimento de TI"}</strong><span>{new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(new Date(item.updatedAt))} · {item.state === "waiting" ? "Transferida" : item.state === "human" ? "Com analista" : item.state === "closed" ? "Encerrada" : "Com o agente"}</span></div>
-            </button>;
+            const activeWithServiceDesk = item.state === "waiting" || item.state === "human";
+            return <div key={item.id} className="history-row">
+              <button className={`history-item ${selected ? "selected" : ""}`} onClick={() => void selectConversation(item)}>
+                <div className="history-avatar">{initials(user.name)}</div>
+                <div className="history-copy"><strong>{selected ? title : item.state === "waiting" ? "Aguardando analista" : "Atendimento de TI"}</strong><span>{new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(new Date(item.updatedAt))} · {item.state === "waiting" ? "Transferida" : item.state === "human" ? "Com analista" : item.state === "closed" ? "Encerrada" : "Com o agente"}</span></div>
+              </button>
+              <button className="history-delete" type="button" onClick={() => void removeConversation(item)} disabled={busy || activeWithServiceDesk} title={activeWithServiceDesk ? "A conversa está com o service desk" : "Excluir conversa"} aria-label={`Excluir conversa das ${new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(new Date(item.updatedAt))}`}>Excluir</button>
+            </div>;
           })}
         </div>
         <div className="history-footer"><div className="mini-kb-icon">⌕</div><strong>Central de ajuda</strong><span>Artigos rápidos sobre sistemas e acessos da Nexo.</span><button onClick={() => { setHistoryOpen(false); void send("faq:lista"); }}>Explorar artigos →</button></div>
