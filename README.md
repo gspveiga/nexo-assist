@@ -23,6 +23,10 @@ Agente de atendimento de TI para a empresa fictícia Nexo. O funcionário conver
 - **Mastra + Google Gemini 3.8 Flash** para classificação de intenção com saída estruturada. O projeto também tem roteamento local determinístico para demonstração sem chave.
 - **Node.js 22.22 ou superior**. `node:sqlite` e o strip de tipos do Node ainda são recursos experimentais nessa versão; o projeto não usa banco em memória na execução normal.
 
+### Motivo da escolha do modelo e do framework
+
+O Gemini 3.8 Flash foi escolhido para classificar intenções porque a tarefa precisa de respostas rápidas e previsíveis em texto estruturado, sem pedir ao modelo que altere dados diretamente. O modelo aceita saída estruturada e tem uma camada gratuita padrão com limites de uso. O Mastra integra o modelo ao agente TypeScript e valida a classificação com um schema Zod; as regras de autorização e as operações continuam nos serviços do backend. O Gemini 3.5 Flash (`gemini-3.5-flash`) foi substituído pelo Google e é encaminhado automaticamente ao 3.6 Flash, então o projeto usa o 3.8 Flash atual.
+
 O PRD permite simular o serviço externo de chamados, mas exige estado persistente. Por isso, o serviço de chamados é implementado no backend local, e seus registros são gravados em SQLite. A camada de agente apenas escolhe uma intenção; o backend valida titularidade, parâmetros e regras antes de qualquer operação. O modo Mastra usa o modelo escolhido quando há uma chave; o modo local fica claramente identificado quando não há credencial.
 
 ## Arquitetura
